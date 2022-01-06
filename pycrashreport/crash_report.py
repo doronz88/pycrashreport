@@ -5,7 +5,7 @@ from typing import List, Optional
 import click
 from cached_property import cached_property
 
-Frame = namedtuple('Frame', 'image_name image_base symbol offset')
+Frame = namedtuple('Frame', 'image_name image_base image_offset symbol symbol_offset')
 Register = namedtuple('Register', 'name value')
 
 
@@ -64,8 +64,8 @@ class CrashReport:
             for frame in self._data['threads'][thread_index]['frames']:
                 image = images[frame['imageIndex']]
                 result.append(
-                    Frame(image_name=image['path'], image_base=hex(image['base']), symbol=image['symbol'],
-                          offset=frame['imageOffset']))
+                    Frame(image_name=image.get('path'), image_base=image.get('base'), symbol=frame.get('symbol'),
+                          image_offset=frame.get('imageOffset'), symbol_offset=frame.get('symbolLocation')))
         else:
             in_frames = False
             for line in self._data.split('\n'):
@@ -76,8 +76,14 @@ class CrashReport:
                         break
 
                     assert splitted[-2] == '+'
-                    result.append(Frame(image_name=splitted[1], image_base=int(splitted[-3], 16), symbol=splitted[-4],
-                                        offset=int(splitted[-1])))
+                    image_base = splitted[-3]
+                    if image_base.startswith('0x'):
+                        result.append(Frame(image_name=splitted[1], image_base=int(image_base, 16), symbol=None,
+                                            image_offset=int(splitted[-1]), symbol_offset=None))
+                    else:
+                        # symbolicated
+                        result.append(Frame(image_name=splitted[1], image_base=None, symbol=image_base,
+                                            image_offset=None, symbol_offset=int(splitted[-1])))
 
                 if line.startswith(f'Thread {self.faulting_thread} Crashed:'):
                     in_frames = True
@@ -91,13 +97,17 @@ class CrashReport:
             thread_index = self._data['faultingThread']
             thread_state = self._data['threads'][thread_index]['threadState']
 
-            for i, reg in enumerate(thread_state['x']):
-                result.append(Register(name=f'x{i}', value=reg['value']))
+            if 'x' in thread_state:
+                for i, reg_x in enumerate(thread_state['x']):
+                    result.append(Register(name=f'x{i}', value=reg_x['value']))
 
-            additional_regs = ('lr', 'cpsr', 'fp', 'sp', 'esr', 'pc', 'far')
-
-            for reg in additional_regs:
-                result.append(Register(name=reg, value=thread_state[reg]['value']))
+            for i, (name, value) in enumerate(thread_state.items()):
+                if name == 'x':
+                    for j, reg_x in enumerate(value):
+                        result.append(Register(name=f'x{j}', value=reg_x['value']))
+                else:
+                    if isinstance(value, dict):
+                        result.append(Register(name=name, value=value['value']))
         else:
             in_frames = False
             for line in self._data.split('\n'):
@@ -137,10 +147,13 @@ class CrashReport:
             return self._parse_field('Exception Subtype')
 
     @cached_property
-    def application_specific_information(self) -> str:
+    def application_specific_information(self) -> Optional[str]:
         result = ''
         if self._is_json:
-            return str(self._data.get('asi'))
+            asi = self._data.get('asi')
+            if asi is None:
+                return None
+            return asi
         else:
             in_frames = False
             for line in self._data.split('\n'):
@@ -154,7 +167,10 @@ class CrashReport:
                 if line.startswith('Application Specific Information:'):
                     in_frames = True
 
-        return result.strip()
+        result = result.strip()
+        if not result:
+            return None
+        return result
 
     def __str__(self):
         filename = ''
@@ -191,6 +207,12 @@ class CrashReport:
 
         result += click.style('Frames:\n', bold=True)
         for frame in self.frames:
-            result += f'\t[{frame.image_name}] 0x{frame.image_base:x} + 0x{frame.offset:x}\n'
+            image_base = '_HEADER'
+            if frame.image_base is not None:
+                image_base = f'0x{frame.image_base:x}'
+            result += f'\t[{frame.image_name}] {image_base} + 0x{frame.image_offset:x}'
+            if frame.symbol is not None:
+                result += f' ({frame.symbol} + 0x{frame.symbol_offset:x})'
+            result += '\n'
 
         return result

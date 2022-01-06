@@ -1,0 +1,138 @@
+{"app_name":"sleep","timestamp":"2022-01-06 15:09:22.00 +0200","app_version":"","slice_uuid":"b9252db9-9910-3b36-865a-01e20427c7e0","build_version":"","platform":1,"share_with_app_devs":0,"is_first_party":1,"bug_type":"309","os_version":"macOS 12.1 (21C52)","incident_id":"051760D9-97FF-475F-8B61-B0FDFB04D484","name":"sleep"}
+{
+  "uptime" : 12000,
+  "procLaunch" : "2022-01-06 15:08:01.9034 +0200",
+  "procRole" : "Unspecified",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "MacBookPro15,1",
+  "procStartAbsTime" : 12004969479222,
+  "coalitionID" : 1503,
+  "osVersion" : {
+    "train" : "macOS 12.1",
+    "build" : "21C52",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2022-01-06 15:09:22.6192 +0200",
+  "incident" : "051760D9-97FF-475F-8B61-B0FDFB04D484",
+  "bug_type" : "309",
+  "pid" : 10277,
+  "procExitAbsTime" : 12085676836378,
+  "cpuType" : "X86-64",
+  "procName" : "sleep",
+  "procPath" : "\/bin\/sleep",
+  "parentProc" : "zsh",
+  "parentPid" : 10192,
+  "coalitionName" : "com.googlecode.iterm2",
+  "crashReporterKey" : "crashreporter_key",
+  "responsiblePid" : 1383,
+  "responsibleProc" : "iTerm2",
+  "wakeTime" : 7780,
+  "bridgeVersion" : {"build":"19P647","train":"6.1"},
+  "sleepWakeUUID" : "62FF37B6-F14D-4DAD-AD0D-5F526FE831EE",
+  "sip" : "disabled",
+  "vmRegionInfo" : "0 is not in any region.  Bytes before following region: 4387598336\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      105857000-10585b000    [   16K] r-x\/r-x SM=COW  \/bin\/sleep",
+  "isCorpse" : 1,
+  "exception" : {"codes":"0x0000000000000001, 0x0000000000000000","rawCodes":[1,0],"type":"EXC_BAD_ACCESS","signal":"SIGSEGV","subtype":"KERN_INVALID_ADDRESS at 0x0000000000000000"},
+  "termination" : {"flags":0,"code":11,"namespace":"SIGNAL","indicator":"Segmentation fault: 11","byProc":"exc handler","byPid":10277},
+  "vmregioninfo" : "0 is not in any region.  Bytes before following region: 4387598336\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      105857000-10585b000    [   16K] r-x\/r-x SM=COW  \/bin\/sleep",
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":6,"task_for_pid":3},"targeted":{"thread_create":0,"thread_set_state":1,"task_for_pid":2},"warnings":1},
+  "faultingThread" : 0,
+  "threads" : [{"triggered":true,"id":135513,"threadState":{"r13":{"value":140701961193192},"rax":{"value":4},"rflags":{"value":66119},"cpu":{"value":8},"r14":{"value":140701961192952},"rsi":{"value":0},"r8":{"value":32},"cr2":{"value":0},"rdx":{"value":1},"r10":{"value":1},"r9":{"value":187692599},"r15":{"value":140701961192952},"rbx":{"value":0},"trap":{"value":14,"description":"(no mapping for user instruction read)"},"err":{"value":20},"r11":{"value":582},"rip":{"value":0},"rbp":{"value":140701961192928},"rsp":{"value":140701961192872},"r12":{"value":4630279072,"symbolLocation":0,"symbol":"_NSConcreteStackBlock"},"rcx":{"value":140701961192872},"flavor":"x86_THREAD_STATE","rdi":{"value":5123}},"queue":"com.apple.main-thread","frames":[{"imageOffset":0,"imageIndex":0},{"imageOffset":67753,"symbol":"nanosleep","symbolLocation":196,"imageIndex":1},{"imageOffset":15826,"imageIndex":2},{"imageOffset":21758,"symbol":"start","symbolLocation":462,"imageIndex":3}]}],
+  "usedImages" : [
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703336611840,
+    "size" : 561152,
+    "uuid" : "e58814cc-dcb7-35a5-badc-e367ed3ac207",
+    "path" : "\/usr\/lib\/system\/libsystem_c.dylib",
+    "name" : "libsystem_c.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4387598336,
+    "size" : 16384,
+    "uuid" : "b9252db9-9910-3b36-865a-01e20427c7e0",
+    "path" : "\/bin\/sleep",
+    "name" : "sleep"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4629753856,
+    "size" : 442368,
+    "uuid" : "cef5a27a-d50b-3020-af03-1734b19bc8c5",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  }
+],
+  "sharedCache" : {
+  "base" : 140703334625280,
+  "size" : 15216738304,
+  "uuid" : "40432a03-88d3-305f-9c0c-e7549e71d927"
+},
+  "vmSummary" : "ReadOnly portion of Libraries: Total=141.4M resident=0K(0%) swapped_out_or_unallocated=141.4M(100%)\nWritable regions: Total=530.1M written=0K(0%) resident=0K(0%) swapped_out=0K(0%) unallocated=530.1M(100%)\n\n                                VIRTUAL   REGION \nREGION TYPE                        SIZE    COUNT (non-coalesced) \n===========                     =======  ======= \nKernel Alloc Once                    8K        1 \nMALLOC                           138.1M       11 \nMALLOC guard page                   16K        4 \nMALLOC_NANO (reserved)           384.0M        1         reserved VM address space (unallocated)\nSTACK GUARD                       56.0M        1 \nStack                             8192K        1 \nVM_ALLOCATE                          8K        2 \nVM_ALLOCATE (reserved)               4K        1         reserved VM address space (unallocated)\n__DATA                             214K       38 \n__DATA_CONST                       303K       34 \n__DATA_DIRTY                        58K       22 \n__LINKEDIT                       136.7M        5 \n__OBJC_RO                         81.8M        1 \n__OBJC_RW                         3136K        2 \n__TEXT                            4800K       45 \ndyld private memory               1024K        1 \nshared memory                        8K        1 \n===========                     =======  ======= \nTOTAL                            814.0M      171 \nTOTAL, minus reserved VM space   430.0M      171 \n",
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "607844aa04477260f58a8077",
+      "factorPackIds" : {
+        "SIRI_MORPHUN_ASSETS" : "6103050cbfe6dc472e1c982a"
+      },
+      "deploymentId" : 240000066
+    },
+    {
+      "rolloutId" : "602ad4dac86151000cf27e46",
+      "factorPackIds" : {
+        "SIRI_DICTATION_ASSETS" : "6193d03f2171a2330e561dfc"
+      },
+      "deploymentId" : 240000290
+    },
+    {
+      "rolloutId" : "60da5e84ab0ca017dace9abf",
+      "factorPackIds" : {
+
+      },
+      "deploymentId" : 240000008
+    },
+    {
+      "rolloutId" : "5fc94383418129005b4e9ae0",
+      "factorPackIds" : {
+
+      },
+      "deploymentId" : 240000196
+    },
+    {
+      "rolloutId" : "601d9415f79519000ccd4b69",
+      "factorPackIds" : {
+        "SIRI_TEXT_TO_SPEECH" : "61c11dcd2cb6041dc630dc63"
+      },
+      "deploymentId" : 240000357
+    },
+    {
+      "rolloutId" : "5ffde50ce2aacd000d47a95f",
+      "factorPackIds" : {
+
+      },
+      "deploymentId" : 240000090
+    }
+  ],
+  "experiments" : [
+
+  ]
+}
+}

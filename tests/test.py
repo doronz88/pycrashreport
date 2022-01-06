@@ -52,27 +52,96 @@ def test_non_symbolicated_ios14():
         Register(name='sp', value=0x000000016f6768c0),
         Register(name='pc', value=0x00000001c3e1a334),
         Register(name='cpsr', value=0x40000000),
+        Register(name='esr', value=0x0000000056000080),
     ]
     for i, register in enumerate(expected_registers):
         assert crash_report.registers[i] == register
 
     expected_frames = [
-        Frame(image_name='libsystem_kernel.dylib', image_base=0x1c3df1000, symbol='0x00000001c3e1a334', offset=168756),
-        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol='0x00000001e18a1a9c', offset=10908),
-        Frame(image_name='libsystem_c.dylib', image_base=0x19ef2e000, symbol='0x000000019efa5b84', offset=490372),
-        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol='0x00000001aa817bb8', offset=80824),
-        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol='0x00000001aa808ec8', offset=20168),
-        Frame(image_name='libobjc.A.dylib', image_base=0x1aa70e000, symbol='0x00000001aa71505c', offset=28764),
-        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol='0x00000001aa816fa0', offset=77728),
-        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol='0x00000001aa816f2c', offset=77612),
-        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol='0x00000001957cb830', offset=18480),
-        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol='0x00000001957cecf4', offset=31988),
-        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol='0x00000001957ce384', offset=29572),
-        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol='0x00000001957dcfe0', offset=90080),
-        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol='0x00000001957dd7d8', offset=92120),
-        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol='0x00000001e18a2768', offset=14184),
-        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol='0x00000001e18a974c', offset=42828),
+        Frame(image_name='libsystem_kernel.dylib', image_base=0x1c3df1000, symbol=None,
+              image_offset=168756, symbol_offset=None),
+        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol=None,
+              image_offset=10908, symbol_offset=None),
+        Frame(image_name='libsystem_c.dylib', image_base=0x19ef2e000, symbol=None, image_offset=490372,
+              symbol_offset=None),
+        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol=None, image_offset=80824,
+              symbol_offset=None),
+        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol=None, image_offset=20168,
+              symbol_offset=None),
+        Frame(image_name='libobjc.A.dylib', image_base=0x1aa70e000, symbol=None, image_offset=28764,
+              symbol_offset=None),
+        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol=None, image_offset=77728,
+              symbol_offset=None),
+        Frame(image_name='libc++abi.dylib', image_base=0x1aa804000, symbol=None, image_offset=77612,
+              symbol_offset=None),
+        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol=None, image_offset=18480,
+              symbol_offset=None),
+        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol=None, image_offset=31988,
+              symbol_offset=None),
+        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol=None, image_offset=29572,
+              symbol_offset=None),
+        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol=None, image_offset=90080,
+              symbol_offset=None),
+        Frame(image_name='libdispatch.dylib', image_base=0x1957c7000, symbol=None, image_offset=92120,
+              symbol_offset=None),
+        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol=None,
+              image_offset=14184, symbol_offset=None),
+        Frame(image_name='libsystem_pthread.dylib', image_base=0x1e189f000, symbol=None,
+              image_offset=42828, symbol_offset=None),
 
+    ]
+    for i, frame in enumerate(expected_frames):
+        assert frame == crash_report.frames[i]
+
+
+def test_non_symbolicated_monterey():
+    filename = str(Path(__file__).parent / 'crash_report_monterey_non_symbolicated.ips')
+    with open(filename) as f:
+        buf = f.read()
+
+    crash_report = CrashReport(buf, filename=filename)
+    assert crash_report.bug_type == '309'
+    assert crash_report.incident_id == '051760D9-97FF-475F-8B61-B0FDFB04D484'
+    assert crash_report.timestamp == '2022-01-06 15:09:22.00 +0200'
+    assert crash_report.faulting_thread == 0
+    assert crash_report.exception_type == 'EXC_BAD_ACCESS'
+    assert crash_report.exception_subtype == 'KERN_INVALID_ADDRESS at 0x0000000000000000'
+    assert crash_report.application_specific_information is None
+
+    expected_registers = [
+        Register(name='r13', value=140701961193192),
+        Register(name='rax', value=4),
+        Register(name='rflags', value=66119),
+        Register(name='cpu', value=8),
+        Register(name='r14', value=140701961192952),
+        Register(name='rsi', value=0),
+        Register(name='r8', value=32),
+        Register(name='cr2', value=0),
+        Register(name='rdx', value=1),
+        Register(name='r10', value=1),
+        Register(name='r9', value=187692599),
+        Register(name='r15', value=140701961192952),
+        Register(name='rbx', value=0),
+        Register(name='trap', value=14),
+        Register(name='err', value=20),
+        Register(name='r11', value=582),
+        Register(name='rip', value=0),
+        Register(name='rbp', value=140701961192928),
+        Register(name='rsp', value=140701961192872),
+        Register(name='r12', value=4630279072),
+        Register(name='rcx', value=140701961192872),
+        Register(name='rdi', value=5123),
+    ]
+    for i, register in enumerate(expected_registers):
+        assert crash_report.registers[i] == register
+
+    expected_frames = [
+        Frame(image_name=None, image_base=0, symbol=None, image_offset=0, symbol_offset=None),
+        Frame(image_name='/usr/lib/system/libsystem_c.dylib', image_base=0x7ff80c65c000, symbol='nanosleep',
+              image_offset=0x108a9, symbol_offset=0xc4),
+        Frame(image_name='/bin/sleep', image_base=0x105857000, symbol=None, image_offset=0x3dd2, symbol_offset=None),
+        Frame(image_name='/usr/lib/dyld', image_base=0x113f47000, symbol='start', image_offset=0x54fe,
+              symbol_offset=0x1ce),
     ]
     for i, frame in enumerate(expected_frames):
         assert frame == crash_report.frames[i]

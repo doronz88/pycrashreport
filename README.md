@@ -11,7 +11,9 @@ Using pip:
 python3 -m pip install --user -U pycrashreport
 ```
 
-# Usage
+# Usage examples
+
+## iOS crash dumps
 
 ```
 ➜  pycrashreport git:(master) ✗ pycrashreport /tmp/itunescloudd-2021-10-22-001453.ips
@@ -47,4 +49,29 @@ Frames:
 	[libdispatch.dylib] 0x1957c7000 + 0x167d8
 	[libsystem_pthread.dylib] 0x1e189f000 + 0x3768
 	[libsystem_pthread.dylib] 0x1e189f000 + 0xa74c
+```
+
+## macOS intel dumps
+
+```
+➜  pycrashreport git:(master) ✗ pycrashreport tests/crash_report_monterey_non_symbolicated.ips
+051760D9-97FF-475F-8B61-B0FDFB04D484 2022-01-06 15:09:22.00 +0200
+tests/crash_report_monterey_non_symbolicated.ips
+
+Exception: EXC_BAD_ACCESS
+Exception Subtype: KERN_INVALID_ADDRESS at 0x0000000000000000
+
+Registers:
+     r13 = 0x00007ff7ba6a86e8      rax = 0x0000000000000004   rflags = 0x0000000000010247      cpu = 0x0000000000000008
+     r14 = 0x00007ff7ba6a85f8      rsi = 0x0000000000000000       r8 = 0x0000000000000020      cr2 = 0x0000000000000000
+     rdx = 0x0000000000000001      r10 = 0x0000000000000001       r9 = 0x000000000b2ff637      r15 = 0x00007ff7ba6a85f8
+     rbx = 0x0000000000000000     trap = 0x000000000000000e      err = 0x0000000000000014      r11 = 0x0000000000000246
+     rip = 0x0000000000000000      rbp = 0x00007ff7ba6a85e0      rsp = 0x00007ff7ba6a85a8      r12 = 0x0000000113fc73a0
+     rcx = 0x00007ff7ba6a85a8      rdi = 0x0000000000001403
+
+Frames:
+	[None] 0x0 + 0x0
+	[/usr/lib/system/libsystem_c.dylib] 0x7ff80c65c000 + 0x108a9 (nanosleep + 0xc4)
+	[/bin/sleep] 0x105857000 + 0x3dd2
+	[/usr/lib/dyld] 0x113f47000 + 0x54fe (start + 0x1ce)
 ```
