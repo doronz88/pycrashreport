@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 import os
 
 BASE_DIR = os.path.realpath(os.path.dirname(__file__))
-VERSION = '0.0.1'
+VERSION = '0.0.2'
 PACKAGE_NAME = 'pycrashreport'
 PACKAGES = [p for p in find_packages() if not p.startswith('tests')]
 
