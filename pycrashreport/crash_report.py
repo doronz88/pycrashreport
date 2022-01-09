@@ -210,7 +210,9 @@ class CrashReport:
             image_base = '_HEADER'
             if frame.image_base is not None:
                 image_base = f'0x{frame.image_base:x}'
-            result += f'\t[{frame.image_name}] {image_base} + 0x{frame.image_offset:x}'
+            result += f'\t[{frame.image_name}] {image_base}'
+            if frame.image_offset:
+                result += f' + 0x{frame.image_offset:x}'
             if frame.symbol is not None:
                 result += f' ({frame.symbol} + 0x{frame.symbol_offset:x})'
             result += '\n'

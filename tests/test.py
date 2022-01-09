@@ -94,6 +94,79 @@ def test_non_symbolicated_ios14():
         assert frame == crash_report.frames[i]
 
 
+def test_symbolicated_ios14():
+    filename = str(Path(__file__).parent / 'crash_report_ios14_symbolicated.ips')
+    with open(filename) as f:
+        buf = f.read()
+
+    crash_report = CrashReport(buf, filename=filename)
+    assert crash_report.bug_type == '109'
+    assert crash_report.incident_id == '2416C26A-72A8-4687-AFAA-7FCEB9D77458'
+    assert crash_report.timestamp == '2022-01-21 18:14:26.00 +0200'
+    assert crash_report.faulting_thread == 0
+    assert crash_report.exception_type == 'EXC_CRASH (SIGABRT)'
+    assert crash_report.exception_subtype is None
+    assert crash_report.application_specific_information == 'dyld3 mode\nstack buffer overflow'
+
+    expected_registers = [
+        Register(name='x0', value=0x0000000000000000),
+        Register(name='x1', value=0x0000000000000000),
+        Register(name='x2', value=0x0000000000000000),
+        Register(name='x3', value=0x0000000000000000),
+        Register(name='x4', value=0x0000000000000000),
+        Register(name='x5', value=0x0000000000000000),
+        Register(name='x6', value=0x00676f6c7379732f),
+        Register(name='x7', value=0xffffffffffffb5dc),
+        Register(name='x8', value=0x000000010016f880),
+        Register(name='x9', value=0xe021f14ad5b95ac2),
+        Register(name='x10', value=0x0000000000000000),
+        Register(name='x11', value=0x0000000000000038),
+        Register(name='x12', value=0x00000001e5bf86c0),
+        Register(name='x13', value=0x0000000089bff7fb),
+        Register(name='x14', value=0x0000000000000001),
+        Register(name='x15', value=0x00000000001ff800),
+        Register(name='x16', value=0x0000000000000148),
+        Register(name='x17', value=0x0000030100000380),
+        Register(name='x18', value=0x0000000000000000),
+        Register(name='x19', value=0x0000000000000006),
+        Register(name='x20', value=0x0000000000000103),
+        Register(name='x21', value=0x000000010016f960),
+        Register(name='x22', value=0x0000000000000000),
+        Register(name='x23', value=0x0000000000000000),
+        Register(name='x24', value=0x0000000000000000),
+        Register(name='x25', value=0x0000000000000000),
+        Register(name='x26', value=0x0000000000000000),
+        Register(name='x27', value=0x0000000000000000),
+        Register(name='x28', value=0x000000016fd83af8),
+        Register(name='fp', value=0x000000016fd839f0),
+        Register(name='lr', value=0x00000001e5c049c4),
+        Register(name='sp', value=0x000000016fd839d0),
+        Register(name='pc', value=0x00000001c95957b0),
+        Register(name='cpsr', value=0x40000000),
+        Register(name='esr', value=0x56000080),
+    ]
+    for i, register in enumerate(expected_registers):
+        assert crash_report.registers[i] == register
+
+    expected_frames = [
+        Frame(image_name='libsystem_kernel.dylib', image_base=None, symbol='__pthread_kill',
+              image_offset=None, symbol_offset=8),
+        Frame(image_name='libsystem_pthread.dylib', image_base=None, symbol='pthread_kill',
+              image_offset=None, symbol_offset=212),
+        Frame(image_name='libsystem_c.dylib', image_base=None, symbol='__abort', image_offset=None,
+              symbol_offset=112),
+        Frame(image_name='libsystem_c.dylib', image_base=None, symbol='a64l', image_offset=None,
+              symbol_offset=0),
+        Frame(image_name='kaki', image_base=None, symbol='main', image_offset=None,
+              symbol_offset=108),
+        Frame(image_name='libdyld.dylib', image_base=None, symbol='start', image_offset=None,
+              symbol_offset=4),
+
+    ]
+    for i, frame in enumerate(expected_frames):
+        assert frame == crash_report.frames[i]
+
+
 def test_non_symbolicated_monterey():
     filename = str(Path(__file__).parent / 'crash_report_monterey_non_symbolicated.ips')
     with open(filename) as f:
