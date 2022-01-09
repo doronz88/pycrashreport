@@ -192,7 +192,7 @@ class CrashReport:
 
         if self.application_specific_information:
             result += click.style('Application Specific Information: ', bold=True)
-            result += self.application_specific_information
+            result += str(self.application_specific_information)
 
         result += '\n'
 
