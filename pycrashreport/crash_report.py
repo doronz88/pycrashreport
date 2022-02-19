@@ -13,6 +13,7 @@ Register = namedtuple('Register', 'name value')
 class CrashReport:
     def __init__(self, buf: str, filename: str = None):
         self.filename = filename
+        self.buf = buf
         self._metadata, self._data = buf.split('\n', 1)
         self._metadata = json.loads(self._metadata)
         self._parse()
