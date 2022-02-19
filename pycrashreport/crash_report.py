@@ -1,4 +1,5 @@
 import json
+import posixpath
 from collections import namedtuple
 from typing import List, Optional
 
@@ -171,6 +172,12 @@ class CrashReport:
         if not result:
             return None
         return result
+
+    def __repr__(self):
+        filename = ''
+        if self.filename:
+            filename = f'FILENAME:{posixpath.basename(self.filename)} '
+        return f'<CrashReport {filename}TIMESTAMP:{self.timestamp}>'
 
     def __str__(self):
         filename = ''
