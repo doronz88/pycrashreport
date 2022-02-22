@@ -40,15 +40,15 @@ class CrashReport:
 
     @cached_property
     def incident_id(self):
-        return self._metadata['incident_id']
+        return self._metadata.get('incident_id')
 
     @cached_property
     def timestamp(self):
-        return self._metadata['timestamp']
+        return self._metadata.get('timestamp')
 
     @cached_property
     def name(self) -> str:
-        return self._metadata['name']
+        return self._metadata.get('name')
 
     @cached_property
     def faulting_thread(self) -> int:
