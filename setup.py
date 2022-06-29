@@ -32,8 +32,6 @@ if __name__ == '__main__':
         long_description_content_type='text/markdown',
         cmdclass={},
         packages=PACKAGES,
-        package_data={'': ['*.txt', '*.TXT', '*.json'], },
-        data_files=[('.', ['requirements.txt'])],
         author='DoronZ',
         install_requires=parse_requirements(),
         entry_points={
