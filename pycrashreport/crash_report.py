@@ -1,21 +1,33 @@
 import json
 import posixpath
 from collections import namedtuple
-from typing import List, Optional
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional, Mapping, IO
 
 import click
 from cached_property import cached_property
+from la_panic.panic_parser.bug_type import BugType as KernelPanicBugType
+from la_panic.panic_parser.kernel_panic import KernelPanic
 
 Frame = namedtuple('Frame', 'image_name image_base image_offset symbol symbol_offset')
 Register = namedtuple('Register', 'name value')
 
 
-class CrashReport:
-    def __init__(self, buf: str, filename: str = None):
+class BugType(Enum):
+    Crash_109 = '109'
+    Crash_309 = '309'
+    ExcResourceThreads = '327'
+    ExcResource = '385'
+    ForceReset = KernelPanicBugType.FORCE_RESET.value
+    Panic = KernelPanicBugType.FULL.value
+
+
+class CrashReportBase:
+    def __init__(self, metadata: Mapping, data: str, filename: str = None):
         self.filename = filename
-        self.buf = buf
-        self._metadata, self._data = buf.split('\n', 1)
-        self._metadata = json.loads(self._metadata)
+        self._metadata = metadata
+        self._data = data
         self._parse()
 
     def _parse(self):
@@ -26,6 +38,39 @@ class CrashReport:
         except json.decoder.JSONDecodeError:
             pass
 
+    @cached_property
+    def bug_type(self) -> BugType:
+        return BugType(self._metadata['bug_type'])
+
+    @cached_property
+    def incident_id(self):
+        return self._metadata.get('incident_id')
+
+    @cached_property
+    def timestamp(self) -> datetime:
+        timestamp = self._metadata.get('timestamp')
+        timestamp_without_timezone = timestamp.split(' +')[0]
+        return datetime.strptime(timestamp_without_timezone, '%Y-%m-%d %H:%M:%S.%f')
+
+    @cached_property
+    def name(self) -> str:
+        return self._metadata.get('name')
+
+    def __repr__(self) -> str:
+        filename = ''
+        if self.filename:
+            filename = f'FILENAME:{posixpath.basename(self.filename)} '
+        return f'<{self.__class__} {filename}TIMESTAMP:{self.timestamp}>'
+
+    def __str__(self) -> str:
+        filename = ''
+        if self.filename:
+            filename = self.filename
+
+        return click.style(f'{self.incident_id} {self.timestamp}\n{filename}\n\n', fg='cyan')
+
+
+class UserModeCrashReport(CrashReportBase):
     def _parse_field(self, name: str) -> str:
         name += ':'
         for line in self._data.split('\n'):
@@ -33,22 +78,6 @@ class CrashReport:
                 field = line.split(name, 1)[1]
                 field = field.strip()
                 return field
-
-    @cached_property
-    def bug_type(self):
-        return self._metadata['bug_type']
-
-    @cached_property
-    def incident_id(self):
-        return self._metadata.get('incident_id')
-
-    @cached_property
-    def timestamp(self):
-        return self._metadata.get('timestamp')
-
-    @cached_property
-    def name(self) -> str:
-        return self._metadata.get('name')
 
     @cached_property
     def faulting_thread(self) -> int:
@@ -174,24 +203,8 @@ class CrashReport:
             return None
         return result
 
-    def __repr__(self):
-        filename = ''
-        if self.filename:
-            filename = f'FILENAME:{posixpath.basename(self.filename)} '
-        return f'<CrashReport {filename}TIMESTAMP:{self.timestamp}>'
-
-    def __str__(self):
-        filename = ''
-        if self.filename:
-            filename = self.filename
-
-        result = ''
-        result += click.style(f'{self.incident_id} {self.timestamp}\n{filename}\n\n', fg='cyan')
-
-        if self.bug_type not in ('109', '309', '327', '385'):
-            # these crashes aren't crash dumps
-            return result
-
+    def __str__(self) -> str:
+        result = super().__str__()
         result += click.style(f'Exception: {self.exception_type}\n', bold=True)
 
         if self.exception_subtype:
@@ -226,3 +239,34 @@ class CrashReport:
             result += '\n'
 
         return result
+
+
+class KernelModeCrashReport(KernelPanic, CrashReportBase):
+    def __init__(self, metadata: Mapping, data: str, filename: str = None):
+        CrashReportBase.__init__(self, metadata, data, filename=filename)
+        KernelPanic.__init__(self, metadata, data, filename=filename)
+
+    @cached_property
+    def bug_type(self) -> BugType:
+        return BugType(self._metadata['bug_type'])
+
+
+def get_crash_report(crash_report_file: IO) -> CrashReportBase:
+    metadata = json.loads(crash_report_file.readline())
+
+    bug_type = BugType(metadata['bug_type'])
+
+    bug_type_parsers = {
+        BugType.ForceReset: KernelModeCrashReport,
+        BugType.Panic: KernelModeCrashReport,
+        BugType.Crash_109: UserModeCrashReport,
+        BugType.Crash_309: UserModeCrashReport,
+        BugType.ExcResourceThreads: UserModeCrashReport,
+        BugType.ExcResource: UserModeCrashReport,
+    }
+
+    parser = bug_type_parsers.get(bug_type)
+    if parser is None:
+        return CrashReportBase(metadata, crash_report_file.read(), crash_report_file.name)
+
+    return parser(metadata, crash_report_file.read(), crash_report_file.name)

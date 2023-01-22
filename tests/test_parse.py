@@ -1,17 +1,15 @@
+from datetime import datetime
 from pathlib import Path
 
-from pycrashreport.crash_report import CrashReport, Frame, Register
+from pycrashreport.crash_report import Frame, Register, get_crash_report, BugType
 
 
 def test_non_symbolicated_ios14():
-    filename = str(Path(__file__).parent / 'crash_report_ios14_non_symbolicated_abort.ips')
-    with open(filename) as f:
-        buf = f.read()
-
-    crash_report = CrashReport(buf, filename=filename)
-    assert crash_report.bug_type == '109'
+    filename = Path(__file__).parent / 'user_mode_crash_report_ios14_non_symbolicated_abort.ips'
+    crash_report = get_crash_report(open(filename, 'rt'))
+    assert crash_report.bug_type == BugType.Crash_109
     assert crash_report.incident_id == '13917FF0-E1B1-4652-84C2-85516D101DFE'
-    assert crash_report.timestamp == '2021-10-22 00:14:53.00 +0300'
+    assert crash_report.timestamp == datetime(2021, 10, 22, 0, 14, 53)
     assert crash_report.faulting_thread == 7
     assert crash_report.exception_type == 'EXC_CRASH (SIGABRT)'
     assert crash_report.exception_subtype is None
@@ -95,14 +93,11 @@ def test_non_symbolicated_ios14():
 
 
 def test_symbolicated_ios14():
-    filename = str(Path(__file__).parent / 'crash_report_ios14_symbolicated.ips')
-    with open(filename) as f:
-        buf = f.read()
-
-    crash_report = CrashReport(buf, filename=filename)
-    assert crash_report.bug_type == '109'
+    filename = str(Path(__file__).parent / 'user_mode_crash_report_ios14_symbolicated.ips')
+    crash_report = get_crash_report(open(filename, 'rt'))
+    assert crash_report.bug_type == BugType.Crash_109
     assert crash_report.incident_id == '2416C26A-72A8-4687-AFAA-7FCEB9D77458'
-    assert crash_report.timestamp == '2022-01-21 18:14:26.00 +0200'
+    assert crash_report.timestamp == datetime(2022, 1, 21, 18, 14, 26)
     assert crash_report.faulting_thread == 0
     assert crash_report.exception_type == 'EXC_CRASH (SIGABRT)'
     assert crash_report.exception_subtype is None
@@ -168,14 +163,11 @@ def test_symbolicated_ios14():
 
 
 def test_non_symbolicated_monterey():
-    filename = str(Path(__file__).parent / 'crash_report_monterey_non_symbolicated.ips')
-    with open(filename) as f:
-        buf = f.read()
-
-    crash_report = CrashReport(buf, filename=filename)
-    assert crash_report.bug_type == '309'
+    filename = str(Path(__file__).parent / 'user_mode_crash_report_monterey_non_symbolicated.ips')
+    crash_report = get_crash_report(open(filename, 'rt'))
+    assert crash_report.bug_type == BugType.Crash_309
     assert crash_report.incident_id == '051760D9-97FF-475F-8B61-B0FDFB04D484'
-    assert crash_report.timestamp == '2022-01-06 15:09:22.00 +0200'
+    assert crash_report.timestamp == datetime(2022, 1, 6, 15, 9, 22)
     assert crash_report.faulting_thread == 0
     assert crash_report.exception_type == 'EXC_BAD_ACCESS'
     assert crash_report.exception_subtype == 'KERN_INVALID_ADDRESS at 0x0000000000000000'
@@ -218,3 +210,11 @@ def test_non_symbolicated_monterey():
     ]
     for i, frame in enumerate(expected_frames):
         assert frame == crash_report.frames[i]
+
+
+def test_forceReset_ios16():
+    filename = str(Path(__file__).parent / 'kernel_mode_crash_report_ios16_forceReset-full.ips')
+    crash_report = get_crash_report(open(filename, 'rt'))
+    assert crash_report.bug_type == BugType.ForceReset
+    assert crash_report.incident_id == '35F77863-C28D-42BA-B633-9732EA1F342A'
+    assert crash_report.timestamp == datetime(2022, 12, 24, 11, 43, 0, 470000)
