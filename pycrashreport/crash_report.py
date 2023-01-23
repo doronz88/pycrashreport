@@ -3,6 +3,7 @@ import posixpath
 from collections import namedtuple
 from datetime import datetime
 from enum import Enum
+from io import StringIO
 from typing import List, Optional, Mapping, IO
 
 import click
@@ -251,7 +252,7 @@ class KernelModeCrashReport(KernelPanic, CrashReportBase):
         return BugType(self._metadata['bug_type'])
 
 
-def get_crash_report(crash_report_file: IO) -> CrashReportBase:
+def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
     metadata = json.loads(crash_report_file.readline())
 
     bug_type = BugType(metadata['bug_type'])
@@ -270,3 +271,8 @@ def get_crash_report(crash_report_file: IO) -> CrashReportBase:
         return CrashReportBase(metadata, crash_report_file.read(), crash_report_file.name)
 
     return parser(metadata, crash_report_file.read(), crash_report_file.name)
+
+def get_crash_report_from_buf(crash_report_buf: str, filename: str = None) -> CrashReportBase:
+    file = StringIO(crash_report_buf)
+    file.name = filename
+    return get_crash_report_from_file(file)
