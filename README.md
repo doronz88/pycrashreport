@@ -3,12 +3,19 @@
 pyCrashReport in intended for analyzing crash reports from Apple devices into a clearer view, without all the thread
 listing and loaded images, just the actual data you really need to debug the problem 😎.
 
+Currently supported crash types:
+
+- User mode crash reports
+- Kernel mode crash reports
+
+All other crash reports will parse only basic metadata information.
+
 # Installation
 
 Using pip:
 
 ```shell
-python3 -m pip install --user -U pycrashreport
+python3 -m pip install -U pycrashreport
 ```
 
 # Usage examples
