@@ -39,11 +39,11 @@ if __name__ == '__main__':
                                 ],
         },
         classifiers=[
-            'Programming Language :: Python :: 3.6',
             'Programming Language :: Python :: 3.7',
             'Programming Language :: Python :: 3.8',
             'Programming Language :: Python :: 3.9',
             'Programming Language :: Python :: 3.10',
+            'Programming Language :: Python :: 3.11',
         ],
         url='https://github.com/doronz88/pycrashreport',
         project_urls={
