@@ -50,7 +50,7 @@ class CrashReportBase:
     @cached_property
     def timestamp(self) -> datetime:
         timestamp = self._metadata.get('timestamp')
-        timestamp_without_timezone = timestamp.split(' +')[0]
+        timestamp_without_timezone = timestamp.rsplit(' ', 1)[0]
         return datetime.strptime(timestamp_without_timezone, '%Y-%m-%d %H:%M:%S.%f')
 
     @cached_property
@@ -255,7 +255,10 @@ class KernelModeCrashReport(KernelPanic, CrashReportBase):
 def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
     metadata = json.loads(crash_report_file.readline())
 
-    bug_type = BugType(metadata['bug_type'])
+    try:
+        bug_type = BugType(metadata['bug_type'])
+    except ValueError:
+        return CrashReportBase(metadata, crash_report_file.read(), crash_report_file.name)
 
     bug_type_parsers = {
         BugType.ForceReset: KernelModeCrashReport,
@@ -271,6 +274,7 @@ def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
         return CrashReportBase(metadata, crash_report_file.read(), crash_report_file.name)
 
     return parser(metadata, crash_report_file.read(), crash_report_file.name)
+
 
 def get_crash_report_from_buf(crash_report_buf: str, filename: str = None) -> CrashReportBase:
     file = StringIO(crash_report_buf)
