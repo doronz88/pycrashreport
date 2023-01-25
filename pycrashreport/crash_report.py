@@ -41,7 +41,11 @@ class CrashReportBase:
 
     @cached_property
     def bug_type(self) -> BugType:
-        return BugType(self._metadata['bug_type'])
+        return BugType(self.bug_type_str)
+
+    @cached_property
+    def bug_type_str(self) -> str:
+        return self._metadata['bug_type']
 
     @cached_property
     def incident_id(self):
