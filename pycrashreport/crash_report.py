@@ -177,6 +177,7 @@ class BugType(Enum):
     KtraceStackshot = '186'
     WirelessDiagnostics = '27'
     PowerLogLite = '178'
+    SKAdNetworkAnalytics = '237'
 
 
 class CrashReportBase:
