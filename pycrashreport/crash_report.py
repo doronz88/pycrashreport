@@ -178,6 +178,7 @@ class BugType(Enum):
     WirelessDiagnostics = '27'
     PowerLogLite = '178'
     SKAdNetworkAnalytics = '237'
+    HangWorkflowResponsiveness = '239'
 
 
 class CrashReportBase:
