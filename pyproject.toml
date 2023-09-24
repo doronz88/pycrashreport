@@ -1,6 +1,6 @@
 [project]
 name = "pycrashreport"
-version = "1.0.7"
+version = "1.1.0"
 description = "Pure python3 for parsing Apple's crash reports"
 readme = "README.md"
 requires-python = ">=3.8"
