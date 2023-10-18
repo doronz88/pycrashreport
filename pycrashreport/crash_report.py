@@ -179,6 +179,7 @@ class BugType(Enum):
     PowerLogLite = '178'
     SKAdNetworkAnalytics = '237'
     HangWorkflowResponsiveness = '239'
+    CompositorClientHang = '243'
 
 
 class CrashReportBase:
