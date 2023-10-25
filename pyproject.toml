@@ -32,7 +32,7 @@ test = ["pytest"]
 "Bug Reports" = "https://github.com/doronz88/pycrashreport/issues"
 
 [project.scripts]
-rpcclient = "pycrashreport.__main__:cli"
+pycrashreport = "pycrashreport.__main__:cli"
 
 [tool.setuptools.packages.find]
 exclude = ["docs*", "tests*"]
