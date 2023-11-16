@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from pycrashreport.crash_report import Frame, Register, get_crash_report_from_file, BugType
+from pycrashreport.crash_report import BugType, Frame, Register, get_crash_report_from_file
 
 
 def test_non_symbolicated_ios14():

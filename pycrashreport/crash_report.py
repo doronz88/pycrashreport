@@ -4,7 +4,7 @@ from collections import namedtuple
 from datetime import datetime
 from enum import Enum
 from io import StringIO
-from typing import List, Optional, Mapping, IO
+from typing import IO, List, Mapping, Optional
 
 import click
 from cached_property import cached_property
@@ -192,7 +192,12 @@ class CrashReportBase:
     def _parse(self):
         self._is_json = False
         try:
-            self._data = json.loads(self._data)
+            modified_data = self._data
+            if '\n  \n' in modified_data:
+                modified_data, rest = modified_data.split('\n  \n', 1)
+                rest = '",' + rest.split('",', 1)[1]
+                modified_data += rest
+            self._data = json.loads(modified_data)
             self._is_json = True
         except json.decoder.JSONDecodeError:
             pass
