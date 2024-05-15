@@ -180,6 +180,7 @@ class BugType(Enum):
     SKAdNetworkAnalytics = '237'
     HangWorkflowResponsiveness = '239'
     CompositorClientHang = '243'
+    AVConference = '240'
 
 
 class CrashReportBase:
