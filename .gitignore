@@ -7,3 +7,4 @@ version.txt
 debug/
 *.pyc
 *.egg-info/
+pycrashreport/_version.py
