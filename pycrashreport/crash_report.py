@@ -181,6 +181,7 @@ class BugType(Enum):
     HangWorkflowResponsiveness = '239'
     CompositorClientHang = '243'
     AVConference = '240'
+    HotStopAppLaunchLog = '248'
 
 
 class CrashReportBase:
