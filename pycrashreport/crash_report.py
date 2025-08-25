@@ -299,10 +299,6 @@ class UserModeCrashReport(CrashReportBase):
             thread_index = self._data['faultingThread']
             thread_state = self._data['threads'][thread_index]['threadState']
 
-            if 'x' in thread_state:
-                for i, reg_x in enumerate(thread_state['x']):
-                    result.append(Register(name=f'x{i}', value=reg_x['value']))
-
             for i, (name, value) in enumerate(thread_state.items()):
                 if name == 'x':
                     for j, reg_x in enumerate(value):
