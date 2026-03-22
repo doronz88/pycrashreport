@@ -3,11 +3,11 @@ import posixpath
 from collections import namedtuple
 from datetime import datetime
 from enum import Enum
+from functools import cached_property
 from io import StringIO
 from typing import IO, List, Mapping, Optional
 
 import click
-from cached_property import cached_property
 from la_panic.panic_parser.kernel_panic import KernelPanic
 
 Frame = namedtuple('Frame', 'image_name image_base image_offset symbol symbol_offset')

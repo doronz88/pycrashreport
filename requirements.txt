@@ -1,3 +1,2 @@
 click
-cached_property
 la_panic==0.5.0
