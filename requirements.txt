@@ -1,2 +1,1 @@
-click
-la_panic==0.5.0
+typer

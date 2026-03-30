@@ -1,13 +1,17 @@
-import click
+from typing import Annotated
+
+import typer
 
 from pycrashreport.crash_report import get_crash_report_from_file
 
 
-@click.command()
-@click.argument('file', type=click.File('rt'))
-def cli(file):
+def main(file: Annotated[typer.FileText, typer.Argument()]) -> None:
     print(get_crash_report_from_file(file))
 
 
-if __name__ == '__main__':
+def cli() -> None:
+    typer.run(main)
+
+
+if __name__ == "__main__":
     cli()
