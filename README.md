@@ -49,6 +49,45 @@ instead of a path.
 A report class is picked by bug type. To parse another one, subclass `CrashReportBase` and list
 the bug types it handles in `BUG_TYPES`.
 
+## Symbolication
+
+A panic report gets the call stack of the thread which panicked, and `report.processes` holds the
+stacks of every other thread it carries. Naming their frames takes symbols, through
+[apple-symbols](https://github.com/doronz88/apple-symbols):
+
+- **Userland frames** are named whenever this host holds the Xcode DeviceSupport of the device and
+  build the report came from (`~/Library/Developer/Xcode/iOS DeviceSupport`, which Xcode or
+  `pymobiledevice3 developer fetch-symbols download` fill). The same goes for the frames a userland
+  crash report left unnamed. It holds the system libraries only, so frames of an executable keep
+  their offset.
+- **Kernel frames** need the kernelcache the device ran, and `ipsw` signatures to name the functions
+  of a released one:
+
+```shell
+pycrashreport panic-full.ips --kernelcache kernelcache.release.iphone17 --kernel-signatures symbolicator/kernel
+```
+
+`-p` (name or pid, may be given several times) lists the threads of further processes of the panic,
+and `--all` those of every process:
+
+```shell
+pycrashreport panic-full.ips -p logd -p 1
+pycrashreport panic-full.ips --all
+```
+
+```python
+from pathlib import Path
+
+from apple_symbols import DeviceSupportSymbols, KernelSymbols
+
+report = parse_report("/path/to/panic-full.ips")
+# set before reading any frames; DeviceSupport is otherwise looked up by itself
+report.device_support_symbols = DeviceSupportSymbols.load(Path("/path/to/Symbols"))
+report.kernel_symbols = KernelSymbols.load(Path("kernelcache.release.iphone17"))
+for frame in report.panicked_thread_frames:
+    print(frame.image, frame.symbol, frame.symbol_offset)
+```
+
 # Usage examples
 
 ## iOS crash dumps
