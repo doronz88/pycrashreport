@@ -19,6 +19,8 @@ from apple_symbols import (
 from rich.console import Console
 from rich.text import Text
 
+from pycrashreport.exit_reason import ExitReason
+
 Frame = namedtuple("Frame", "image_name image_base image_offset symbol symbol_offset")
 Register = namedtuple("Register", "name value")
 KernelExtension = namedtuple("KernelExtension", "name version uuid start end")
@@ -834,6 +836,11 @@ class KernelModeCrashReport(CrashReportBase):
         return first_line
 
     @cached_property
+    def exit_reason(self) -> Optional[ExitReason]:
+        """Why the process ended whose exit made the kernel panic, when that is what happened."""
+        return ExitReason.from_panic_string(self.panic_string)
+
+    @cached_property
     def panic_caller(self) -> Optional[int]:
         lines = self._panic_lines()
         if not lines:
@@ -987,6 +994,9 @@ class KernelModeCrashReport(CrashReportBase):
         if self.panic_string:
             text.append("Panic: ", style=STYLE_LABEL)
             text.append(f"{self.panic_string}\n", style=STYLE_FAILURE)
+        if self.exit_reason:
+            text.append("Exit reason: ", style=STYLE_LABEL)
+            text.append(f"{self.exit_reason}\n", style=STYLE_DETAIL)
         if self.debugger_message:
             text.append("Debugger message: ", style=STYLE_LABEL)
             text.append(f"{self.debugger_message}\n", style=STYLE_DETAIL)

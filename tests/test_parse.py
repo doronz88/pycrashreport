@@ -630,3 +630,99 @@ def test_parse_report_matches_parsing_an_open_file():
     with open(path, encoding="utf-8") as report:
         from_file = get_crash_report_from_file(report)
     assert parse_report(path).__rich__().plain == from_file.__rich__().plain
+
+
+def panic_report_saying(panic_string: str) -> KernelModeCrashReport:
+    crash_report = get_crash_report_from_buf(
+        json.dumps({"bug_type": "210", "timestamp": "2026-11-19 18:35:27.00 +0200"})
+        + "\n"
+        + json.dumps(
+            {
+                "panicString": f"panic(cpu 1 caller 0xfffffe0008cfbc9c): {panic_string}\n"
+                "Debugger message: panic"
+            }
+        ),
+        filename="panic-full.ips",
+    )
+    assert isinstance(crash_report, KernelModeCrashReport)
+    return crash_report
+
+
+def test_panic_exit_reason_of_a_process_which_exited():
+    crash_report = panic_report_saying(
+        " logd[26046] exited -- exit reason namespace 2 subcode 0x6 description: none"
+    )
+    assert crash_report.exit_reason.namespace == 2
+    assert crash_report.exit_reason.namespace_name == "SIGNAL"
+    assert crash_report.exit_reason.subcode == 6
+    assert crash_report.exit_reason.subcode_name == "SIGABRT"
+    assert crash_report.__rich__().plain.splitlines()[3:5] == [
+        "Panic:  logd[26046] exited -- exit reason namespace 2 subcode 0x6 description: none",
+        "Exit reason: SIGNAL, SIGABRT",
+    ]
+
+
+def test_panic_exit_reason_of_an_initproc_which_failed_to_start():
+    crash_report = panic_report_saying(
+        " initproc failed to start -- exit reason namespace 2 subcode 0x4 description: none"
+    )
+    assert crash_report.exit_reason.namespace_name == "SIGNAL"
+    assert crash_report.exit_reason.subcode_name == "SIGILL"
+    assert "\nExit reason: SIGNAL, SIGILL\n" in crash_report.__rich__().plain
+
+
+def test_panic_exit_reason_codes_mean_what_their_namespace_says():
+    crash_report = panic_report_saying(
+        "CS_KILLED initproc exited -- exit reason namespace 3 subcode 0x2 description: none"
+    )
+    assert str(crash_report.exit_reason) == "CODESIGNING, INVALID_PAGE"
+
+    crash_report = panic_report_saying(
+        " backboardd[70] exited -- exit reason namespace 10 subcode 0x8badf00d description: none"
+    )
+    assert crash_report.exit_reason.subcode == 0x8BADF00D
+    assert str(crash_report.exit_reason) == "SPRINGBOARD, Watchdog Violation"
+
+
+def test_panic_exit_reason_of_a_namespace_without_named_codes():
+    crash_report = panic_report_saying(
+        " launchd[1] exited -- exit reason namespace 15 subcode 0xdead10cc description: none"
+    )
+    assert crash_report.exit_reason.namespace_name == "RUNNINGBOARD"
+    assert crash_report.exit_reason.subcode_name is None
+    assert (
+        "\nExit reason: RUNNINGBOARD, subcode 0xdead10cc\n"
+        in crash_report.__rich__().plain
+    )
+
+
+def test_panic_exit_reason_unknown_subcode():
+    crash_report = panic_report_saying(
+        " logd[26046] exited -- exit reason namespace 2 subcode 0x63 description: none"
+    )
+    assert crash_report.exit_reason.namespace_name == "SIGNAL"
+    assert crash_report.exit_reason.subcode == 0x63
+    assert crash_report.exit_reason.subcode_name is None
+    assert "\nExit reason: SIGNAL, subcode 0x63\n" in crash_report.__rich__().plain
+
+
+def test_panic_exit_reason_unknown_namespace():
+    crash_report = panic_report_saying(
+        " logd[26046] exited -- exit reason namespace 999 subcode 0x6 description: none"
+    )
+    assert crash_report.exit_reason.namespace == 999
+    assert crash_report.exit_reason.namespace_name is None
+    assert crash_report.exit_reason.subcode == 6
+    assert crash_report.exit_reason.subcode_name is None
+    assert (
+        "\nExit reason: namespace 999, subcode 0x6\n" in crash_report.__rich__().plain
+    )
+
+
+def test_panic_without_an_exit_reason():
+    crash_report = panic_report_saying("watchdog timeout")
+    assert crash_report.exit_reason is None
+    assert "Exit reason" not in crash_report.__rich__().plain
+
+    assert force_reset_report().exit_reason is None
+    assert "Exit reason" not in force_reset_report().__rich__().plain
