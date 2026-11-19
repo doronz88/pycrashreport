@@ -34,15 +34,17 @@ through a console, so long lines such as register rows are not reflowed to the t
 ```python
 from rich.console import Console
 
-from pycrashreport.crash_report import get_crash_report_from_file
+from pycrashreport.crash_report import parse_report
 
-with open("/path/to/report.ips") as f:
-    report = get_crash_report_from_file(f)
+report = parse_report("/path/to/report.ips")
 
 Console().print(report, soft_wrap=True)  # colors follow the terminal
 print(report)                            # always colored
 print(report.bug_type, report.incident_id, report.timestamp)
 ```
+
+`get_crash_report_from_file()` and `get_crash_report_from_buf()` parse an open file or a string
+instead of a path.
 
 A report class is picked by bug type. To parse another one, subclass `CrashReportBase` and list
 the bug types it handles in `BUG_TYPES`.

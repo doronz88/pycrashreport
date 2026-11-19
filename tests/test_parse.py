@@ -16,6 +16,7 @@ from pycrashreport.crash_report import (
     UserModeCrashReport,
     get_crash_report_from_buf,
     get_crash_report_from_file,
+    parse_report,
 )
 
 REPORTS = Path(__file__).parent
@@ -23,14 +24,9 @@ REPORTS = Path(__file__).parent
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def parse_report(name: str) -> CrashReportBase:
-    with open(REPORTS / name) as report:
-        return get_crash_report_from_file(report)
-
-
 def test_non_symbolicated_ios14():
     crash_report = parse_report(
-        "user_mode_crash_report_ios14_non_symbolicated_abort.ips"
+        REPORTS / "user_mode_crash_report_ios14_non_symbolicated_abort.ips"
     )
     assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_109
@@ -193,7 +189,9 @@ def test_non_symbolicated_ios14():
 
 
 def test_symbolicated_ios14():
-    crash_report = parse_report("user_mode_crash_report_ios14_symbolicated.ips")
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
     assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_109
     assert crash_report.incident_id == "2416C26A-72A8-4687-AFAA-7FCEB9D77458"
@@ -295,7 +293,9 @@ def test_symbolicated_ios14():
 
 
 def test_non_symbolicated_monterey():
-    crash_report = parse_report("user_mode_crash_report_monterey_non_symbolicated.ips")
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips"
+    )
     assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_309
     assert crash_report.incident_id == "051760D9-97FF-475F-8B61-B0FDFB04D484"
@@ -369,7 +369,9 @@ def test_non_symbolicated_monterey():
 
 
 def test_forceReset_ios16():
-    crash_report = parse_report("kernel_mode_crash_report_ios16_forceReset-full.ips")
+    crash_report = parse_report(
+        REPORTS / "kernel_mode_crash_report_ios16_forceReset-full.ips"
+    )
     assert isinstance(crash_report, KernelModeCrashReport)
     assert crash_report.bug_type == BugType.ForceReset
     assert crash_report.incident_id == "35F77863-C28D-42BA-B633-9732EA1F342A"
@@ -555,7 +557,9 @@ def test_every_listed_bug_type_selects_its_parser():
 
 
 def test_user_mode_rendering():
-    crash_report = parse_report("user_mode_crash_report_ios14_symbolicated.ips")
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
     rendered = crash_report.__rich__()
     assert isinstance(rendered, Text)
     lines = rendered.plain.splitlines()
@@ -592,7 +596,9 @@ def test_str_is_colored(monkeypatch):
 
 
 def test_soft_wrap_keeps_lines_whole_on_a_narrow_console():
-    crash_report = parse_report("user_mode_crash_report_ios14_symbolicated.ips")
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
     output = StringIO()
     Console(file=output, width=20).print(crash_report, soft_wrap=True, end="")
     assert output.getvalue() == crash_report.__rich__().plain.expandtabs(8)
@@ -608,3 +614,19 @@ def test_str_honors_no_color(monkeypatch):
         for code in match.split(";")
     }
     assert codes <= {"0", "1", "2"}
+
+
+def test_parse_report_accepts_a_path_or_a_string():
+    path = REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    for location in (path, str(path)):
+        crash_report = parse_report(location)
+        assert isinstance(crash_report, UserModeCrashReport)
+        assert crash_report.filename == str(path)
+        assert crash_report.incident_id == "2416C26A-72A8-4687-AFAA-7FCEB9D77458"
+
+
+def test_parse_report_matches_parsing_an_open_file():
+    path = REPORTS / "kernel_mode_crash_report_ios16_forceReset-full.ips"
+    with open(path, encoding="utf-8") as report:
+        from_file = get_crash_report_from_file(report)
+    assert parse_report(path).__rich__().plain == from_file.__rich__().plain

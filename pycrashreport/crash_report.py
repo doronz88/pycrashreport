@@ -1,4 +1,5 @@
 import json
+import os
 import posixpath
 import re
 from collections import namedtuple
@@ -7,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from io import StringIO
-from typing import IO, Any, ClassVar, List, Mapping, Optional
+from typing import IO, Any, ClassVar, List, Mapping, Optional, Union
 
 from rich.console import Console
 from rich.text import Text
@@ -774,3 +775,10 @@ def get_crash_report_from_buf(
     file = StringIO(crash_report_buf)
     file.name = filename
     return get_crash_report_from_file(file)
+
+
+def parse_report(path: Union[str, "os.PathLike[str]"]) -> CrashReportBase:
+    """Parse the report stored at ``path``, which becomes its ``filename``."""
+    # reports are UTF-8 whatever the platform's default encoding is
+    with open(path, encoding="utf-8") as report:
+        return get_crash_report_from_file(report)
