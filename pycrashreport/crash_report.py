@@ -1,4 +1,5 @@
 import json
+import os
 import posixpath
 import re
 from collections import namedtuple
@@ -7,13 +8,54 @@ from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from io import StringIO
-from typing import IO, List, Mapping, Optional
+from typing import IO, Any, ClassVar, List, Mapping, Optional, Union
 
-import typer
+from rich.console import Console
+from rich.text import Text
 
 Frame = namedtuple("Frame", "image_name image_base image_offset symbol symbol_offset")
 Register = namedtuple("Register", "name value")
 KernelExtension = namedtuple("KernelExtension", "name version uuid start end")
+
+
+STYLE_INCIDENT = "bold cyan"
+STYLE_TIMESTAMP = "cyan"
+STYLE_FILENAME = "dim cyan"
+STYLE_LABEL = "bold"
+STYLE_FAILURE = "bold red"
+STYLE_DETAIL = "yellow"
+STYLE_IMAGE = "green"
+STYLE_SYMBOL = "bold yellow"
+STYLE_ADDRESS = "blue"
+STYLE_REGISTER = "cyan"
+STYLE_REGISTER_CONTROL = "bold magenta"
+STYLE_ZERO = "dim"
+STYLE_IDENTIFIER = "dim"
+
+#: Registers that say where execution was, set apart from the general purpose ones.
+CONTROL_REGISTERS = frozenset({"pc", "lr", "sp", "fp", "rip", "rsp", "rbp"})
+
+REGISTERS_PER_ROW = 4
+REGISTER_CELL_WIDTH = 30
+
+
+def _to_ansi(text: Text) -> str:
+    """Render to a string carrying ANSI colors, for callers that just ``print()`` a report.
+
+    Colors are emitted whether or not the destination is a terminal, since a string cannot know
+    where it will end up; ``NO_COLOR`` still drops them, leaving bold and dim.
+    """
+    buffer = StringIO()
+    console = Console(
+        file=buffer,
+        force_terminal=True,
+        color_system="standard",
+        legacy_windows=False,
+        highlight=False,
+    )
+    # soft_wrap: a register row or a frame is one line, never reflowed to some width
+    console.print(text, soft_wrap=True, end="")
+    return buffer.getvalue()
 
 
 @dataclass(frozen=True)
@@ -204,10 +246,32 @@ class BugType(Enum):
 
 
 class CrashReportBase:
-    def __init__(self, metadata: Mapping, data: str, filename: str = None):
+    """A crash report of any bug type. Subclasses parse what their own report format carries."""
+
+    #: Bug types a subclass parses. Listing them here is all it takes to be picked for them.
+    BUG_TYPES: ClassVar[tuple] = ()
+
+    _parsers: ClassVar[dict] = {}
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for bug_type in cls.BUG_TYPES:
+            CrashReportBase._parsers[bug_type.value] = cls
+
+    @staticmethod
+    def parser_for(bug_type: str) -> "type[CrashReportBase]":
+        """Class parsing reports of the given raw bug type, the base class when none is dedicated."""
+        return CrashReportBase._parsers.get(bug_type, CrashReportBase)
+
+    def __init__(
+        self,
+        metadata: Mapping[str, Any],
+        data: str,
+        filename: Optional[str] = None,
+    ) -> None:
         self.filename = filename
-        self._metadata = metadata
         self._data = data
+        self._metadata = metadata
         self._parse()
 
     def _parse(self):
@@ -245,23 +309,35 @@ class CrashReportBase:
     def name(self) -> str:
         return self._metadata.get("name")
 
-    def __repr__(self) -> str:
-        filename = ""
-        if self.filename:
-            filename = f"FILENAME:{posixpath.basename(self.filename)} "
-        return f"<{self.__class__} {filename}TIMESTAMP:{self.timestamp}>"
+    def _render_details(self, text: Text) -> None:
+        """Append what follows the summary. Nothing, unless a subclass knows the format."""
 
-    def __str__(self) -> str:
-        filename = ""
-        if self.filename:
-            filename = self.filename
+    def __rich__(self) -> Text:
+        text = Text()
+        text.append(f"{self.incident_id} ", style=STYLE_INCIDENT)
+        text.append(f"{self.timestamp}\n", style=STYLE_TIMESTAMP)
+        text.append(f"{self.filename or ''}\n\n", style=STYLE_FILENAME)
+        self._render_details(text)
+        return text
 
-        return typer.style(
-            f"{self.incident_id} {self.timestamp}\n{filename}\n\n", fg=typer.colors.CYAN
+    def __repr__(self):
+        source = (
+            f"FILENAME:{posixpath.basename(self.filename)} " if self.filename else ""
         )
+        return f"<{self.__class__} {source}TIMESTAMP:{self.timestamp}>"
+
+    def __str__(self):
+        return _to_ansi(self.__rich__())
 
 
 class UserModeCrashReport(CrashReportBase):
+    BUG_TYPES = (
+        BugType.Crash_109,
+        BugType.Crash_309,
+        BugType.ExcResourceThreads_327,
+        BugType.ExcResource_385,
+    )
+
     def _parse_field(self, name: str) -> str:
         name += ":"
         for line in self._data.split("\n"):
@@ -414,45 +490,72 @@ class UserModeCrashReport(CrashReportBase):
             return None
         return result
 
-    def __str__(self) -> str:
-        result = super().__str__()
-        result += typer.style(f"Exception: {self.exception_type}\n", bold=True)
+    def _render_details(self, text: Text) -> None:
+        text.append("Exception: ", style=STYLE_LABEL)
+        text.append(f"{self.exception_type}\n", style=STYLE_FAILURE)
 
         if self.exception_subtype:
-            result += typer.style("Exception Subtype: ", bold=True)
-            result += f"{self.exception_subtype}\n"
+            text.append("Exception Subtype: ", style=STYLE_LABEL)
+            text.append(f"{self.exception_subtype}\n", style=STYLE_DETAIL)
 
         if self.application_specific_information:
-            result += typer.style("Application Specific Information: ", bold=True)
-            result += str(self.application_specific_information)
+            text.append("Application Specific Information: ", style=STYLE_LABEL)
+            text.append(str(self.application_specific_information), style=STYLE_DETAIL)
 
-        result += "\n"
+        text.append("\n")
 
-        result += typer.style("Registers:", bold=True)
+        text.append("Registers:", style=STYLE_LABEL)
         for i, register in enumerate(self.registers):
-            if i % 4 == 0:
-                result += "\n"
+            if i % REGISTERS_PER_ROW == 0:
+                text.append("\n")
+            self._render_register(text, register)
 
-            result += f"{register.name} = 0x{register.value:016x} ".rjust(30)
+        text.append("\n\n")
 
-        result += "\n\n"
-
-        result += typer.style("Frames:\n", bold=True)
+        text.append("Frames:\n", style=STYLE_LABEL)
         for frame in self.frames:
-            image_base = "_HEADER"
-            if frame.image_base is not None:
-                image_base = f"0x{frame.image_base:x}"
-            result += f"\t[{frame.image_name}] {image_base}"
-            if frame.image_offset:
-                result += f" + 0x{frame.image_offset:x}"
-            if frame.symbol is not None:
-                result += f" ({frame.symbol} + 0x{frame.symbol_offset:x})"
-            result += "\n"
+            self._render_frame(text, frame)
 
-        return result
+    @staticmethod
+    def _render_register(text: Text, register: Register) -> None:
+        value = f"0x{register.value:016x}"
+        # right-aligned in a fixed cell, so the rows line up into columns
+        cell = f"{register.name} = {value} "
+        text.append(" " * (REGISTER_CELL_WIDTH - len(cell)))
+        text.append(
+            register.name,
+            style=(
+                STYLE_REGISTER_CONTROL
+                if register.name in CONTROL_REGISTERS
+                else STYLE_REGISTER
+            ),
+        )
+        text.append(" = ")
+        text.append(value, style=STYLE_ZERO if register.value == 0 else None)
+        text.append(" ")
+
+    @staticmethod
+    def _render_frame(text: Text, frame: Frame) -> None:
+        text.append("\t[")
+        text.append(str(frame.image_name), style=STYLE_IMAGE)
+        text.append("] ")
+        text.append(
+            "_HEADER" if frame.image_base is None else f"0x{frame.image_base:x}",
+            style=STYLE_ADDRESS,
+        )
+        if frame.image_offset:
+            text.append(" + ")
+            text.append(f"0x{frame.image_offset:x}", style=STYLE_ADDRESS)
+        if frame.symbol is not None:
+            text.append(" (")
+            text.append(frame.symbol, style=STYLE_SYMBOL)
+            text.append(f" + 0x{frame.symbol_offset:x})")
+        text.append("\n")
 
 
 class KernelModeCrashReport(CrashReportBase):
+    BUG_TYPES = (BugType.ForceReset, BugType.Panic_210)
+
     def _parse(self):
         super()._parse()
         self._panic_text = ""
@@ -633,61 +736,37 @@ class KernelModeCrashReport(CrashReportBase):
             result.append(line.strip())
         return result
 
-    def __str__(self) -> str:
-        result = super().__str__()
+    def _render_details(self, text: Text) -> None:
         if self.panic_string:
-            result += typer.style(f"Panic: {self.panic_string}\n", bold=True)
+            text.append("Panic: ", style=STYLE_LABEL)
+            text.append(f"{self.panic_string}\n", style=STYLE_FAILURE)
         if self.debugger_message:
-            result += typer.style("Debugger message: ", bold=True)
-            result += f"{self.debugger_message}\n"
+            text.append("Debugger message: ", style=STYLE_LABEL)
+            text.append(f"{self.debugger_message}\n", style=STYLE_DETAIL)
         if self.panicked_task:
-            result += typer.style("Panicked task: ", bold=True)
-            result += (
-                f"{self.panicked_task.name} (pid {self.panicked_task.pid}, "
-                f"{self.panicked_task.threads} threads)\n"
+            text.append("Panicked task: ", style=STYLE_LABEL)
+            text.append(self.panicked_task.name, style=STYLE_IMAGE)
+            text.append(
+                f" (pid {self.panicked_task.pid}, {self.panicked_task.threads} threads)\n"
             )
         if self.panicked_thread:
-            result += typer.style("Panicked thread: ", bold=True)
-            result += (
-                f"tid {self.panicked_thread.tid} @ 0x{self.panicked_thread.address:x}\n"
-            )
+            text.append("Panicked thread: ", style=STYLE_LABEL)
+            text.append(f"tid {self.panicked_thread.tid} @ ")
+            text.append(f"0x{self.panicked_thread.address:x}\n", style=STYLE_ADDRESS)
         if self.kernel_extensions_in_backtrace:
-            result += typer.style("Kernel Extensions in backtrace:\n", bold=True)
+            text.append("Kernel Extensions in backtrace:\n", style=STYLE_LABEL)
             for extension in self.kernel_extensions_in_backtrace:
-                result += f"\t{extension.name} {extension.version} [{extension.uuid}]\n"
-        return result
-
-    @cached_property
-    def bug_type(self) -> BugType:
-        return BugType(self._metadata["bug_type"])
+                text.append("\t")
+                text.append(extension.name, style=STYLE_IMAGE)
+                text.append(f" {extension.version} ")
+                text.append(f"[{extension.uuid}]\n", style=STYLE_IDENTIFIER)
 
 
 def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
-    metadata = json.loads(crash_report_file.readline())
-
-    try:
-        bug_type = BugType(metadata["bug_type"])
-    except ValueError:
-        return CrashReportBase(
-            metadata, crash_report_file.read(), crash_report_file.name
-        )
-
-    bug_type_parsers = {
-        BugType.ForceReset: KernelModeCrashReport,
-        BugType.Panic_210: KernelModeCrashReport,
-        BugType.Crash_109: UserModeCrashReport,
-        BugType.Crash_309: UserModeCrashReport,
-        BugType.ExcResourceThreads_327: UserModeCrashReport,
-        BugType.ExcResource_385: UserModeCrashReport,
-    }
-
-    parser = bug_type_parsers.get(bug_type)
-    if parser is None:
-        return CrashReportBase(
-            metadata, crash_report_file.read(), crash_report_file.name
-        )
-
-    return parser(metadata, crash_report_file.read(), crash_report_file.name)
+    """Parse a report, its metadata line first, with the class dedicated to its bug type."""
+    header = json.loads(crash_report_file.readline())
+    report_class = CrashReportBase.parser_for(header["bug_type"])
+    return report_class(header, crash_report_file.read(), crash_report_file.name)
 
 
 def get_crash_report_from_buf(
@@ -696,3 +775,10 @@ def get_crash_report_from_buf(
     file = StringIO(crash_report_buf)
     file.name = filename
     return get_crash_report_from_file(file)
+
+
+def parse_report(path: Union[str, "os.PathLike[str]"]) -> CrashReportBase:
+    """Parse the report stored at ``path``, which becomes its ``filename``."""
+    # reports are UTF-8 whatever the platform's default encoding is
+    with open(path, encoding="utf-8") as report:
+        return get_crash_report_from_file(report)

@@ -1,21 +1,34 @@
+import json
+import re
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
+
+from rich.console import Console
+from rich.text import Text
 
 from pycrashreport.crash_report import (
     BugType,
+    CrashReportBase,
     Frame,
+    KernelModeCrashReport,
     Register,
+    UserModeCrashReport,
     get_crash_report_from_buf,
     get_crash_report_from_file,
+    parse_report,
 )
+
+REPORTS = Path(__file__).parent
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def test_non_symbolicated_ios14():
-    filename = (
-        Path(__file__).parent
-        / "user_mode_crash_report_ios14_non_symbolicated_abort.ips"
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_non_symbolicated_abort.ips"
     )
-    crash_report = get_crash_report_from_file(open(filename, "rt"))
+    assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_109
     assert crash_report.incident_id == "13917FF0-E1B1-4652-84C2-85516D101DFE"
     assert crash_report.timestamp == datetime(2021, 10, 22, 0, 14, 53)
@@ -176,10 +189,10 @@ def test_non_symbolicated_ios14():
 
 
 def test_symbolicated_ios14():
-    filename = str(
-        Path(__file__).parent / "user_mode_crash_report_ios14_symbolicated.ips"
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
     )
-    crash_report = get_crash_report_from_file(open(filename, "rt"))
+    assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_109
     assert crash_report.incident_id == "2416C26A-72A8-4687-AFAA-7FCEB9D77458"
     assert crash_report.timestamp == datetime(2022, 1, 21, 18, 14, 26)
@@ -280,10 +293,10 @@ def test_symbolicated_ios14():
 
 
 def test_non_symbolicated_monterey():
-    filename = str(
-        Path(__file__).parent / "user_mode_crash_report_monterey_non_symbolicated.ips"
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips"
     )
-    crash_report = get_crash_report_from_file(open(filename, "rt"))
+    assert isinstance(crash_report, UserModeCrashReport)
     assert crash_report.bug_type == BugType.Crash_309
     assert crash_report.incident_id == "051760D9-97FF-475F-8B61-B0FDFB04D484"
     assert crash_report.timestamp == datetime(2022, 1, 6, 15, 9, 22)
@@ -356,10 +369,10 @@ def test_non_symbolicated_monterey():
 
 
 def test_forceReset_ios16():
-    filename = str(
-        Path(__file__).parent / "kernel_mode_crash_report_ios16_forceReset-full.ips"
+    crash_report = parse_report(
+        REPORTS / "kernel_mode_crash_report_ios16_forceReset-full.ips"
     )
-    crash_report = get_crash_report_from_file(open(filename, "rt"))
+    assert isinstance(crash_report, KernelModeCrashReport)
     assert crash_report.bug_type == BugType.ForceReset
     assert crash_report.incident_id == "35F77863-C28D-42BA-B633-9732EA1F342A"
     assert crash_report.timestamp == datetime(2022, 12, 24, 11, 43, 0, 470000)
@@ -404,6 +417,104 @@ def test_forceReset_ios16():
     assert crash_report.loaded_kexts[0] == "com.apple.driver.AppleUSBDeviceMux\t1.0.0d1"
 
 
+FORCE_RESET_PANIC = "\n".join(
+    [
+        "panic(cpu 2 caller 0xfffffff01a2b3c4d): btn_rst",
+        "Debugger message: panic",
+        "Memory ID: 0x6",
+        "OS release type: User",
+        "OS version: 21A000",
+        "Kernel version: Darwin Kernel Version 23.0.0: Thu Jan  1 00:00:00 PST 2026; root:xnu-1000.0.0~1/RELEASE_ARM64_T8101",
+        "Fileset Kernelcache UUID: 0123456789ABCDEF0123456789ABCDEF",
+        "Kernel UUID: 11111111-2222-3333-4444-555555555555",
+        "Boot session UUID: 66666666-7777-8888-9999-AAAAAAAAAAAA",
+        "iBoot version: iBoot-1000.0.0",
+        "secure boot?: YES",
+        "roots installed: 0",
+        "Paniclog version: 14",
+        "",
+        "Panicked task 0xffffffe000001000: 0 pages, 250 threads: pid 0: kernel_task",
+        "Panicked thread: 0xffffffe000002000, backtrace: 0xffffffe000003000, tid: 512",
+        "\t\t  lr: 0xfffffff010000100  fp: 0xffffffe000003010",
+        "      Kernel Extensions in backtrace:",
+        "         com.example.driver.Buttons(1.0d1)[AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE]@0xfffffff010000000->0xfffffff010003fff",
+        "            dependency: com.example.iokit.Family(2.0)[FFFFFFFF-0000-1111-2222-333333333333]@0xfffffff010004000->0xfffffff010007fff",
+        "",
+        "last started kext at 123456789: com.example.driver.Last\t1 (addr 0xfffffff011000000, size 4096)",
+        "loaded kexts:",
+        "com.example.driver.First\t1.0.0d1",
+        "com.example.driver.Second\t2.0",
+        "",
+    ]
+)
+
+
+def force_reset_report() -> CrashReportBase:
+    """A force-reset report in the layout the device writes: a metadata line, then a JSON body."""
+    metadata = {
+        "bug_type": "151",
+        "timestamp": "2026-01-02 03:04:05.67 +0000",
+        "os_version": "iPhone OS 17.0 (21A000)",
+        "roots_installed": 0,
+        "incident_id": "00000000-1111-2222-3333-444444444444",
+    }
+    body = {"build": "iPhone OS 17.0 (21A000)", "string": FORCE_RESET_PANIC}
+    return get_crash_report_from_buf(
+        json.dumps(metadata) + "\n" + json.dumps(body, indent=2),
+        filename="forceReset-full.ips",
+    )
+
+
+def test_force_reset():
+    crash_report = force_reset_report()
+    assert isinstance(crash_report, KernelModeCrashReport)
+    assert crash_report.bug_type == BugType.ForceReset
+    assert crash_report.incident_id == "00000000-1111-2222-3333-444444444444"
+    assert crash_report.timestamp == datetime(2026, 1, 2, 3, 4, 5, 670000)
+    assert crash_report.panic_string == "btn_rst"
+    assert crash_report.panic_caller == 0xFFFFFFF01A2B3C4D
+    assert crash_report.debugger_message == "panic"
+    assert crash_report.memory_id == 0x6
+    assert crash_report.os_release_type == "User"
+    assert crash_report.os_version == "21A000"
+    assert crash_report.kernel_version == (
+        "Darwin Kernel Version 23.0.0: Thu Jan  1 00:00:00 PST 2026; "
+        "root:xnu-1000.0.0~1/RELEASE_ARM64_T8101"
+    )
+    assert crash_report.fileset_kernelcache_uuid == "0123456789ABCDEF0123456789ABCDEF"
+    assert crash_report.kernel_uuid == "11111111-2222-3333-4444-555555555555"
+    assert crash_report.boot_session_uuid == "66666666-7777-8888-9999-AAAAAAAAAAAA"
+    assert crash_report.iboot_version == "iBoot-1000.0.0"
+    assert crash_report.secure_boot is True
+    assert crash_report.roots_installed == 0
+    assert crash_report.paniclog_version == 14
+
+    assert crash_report.panicked_task.address == 0xFFFFFFE000001000
+    assert crash_report.panicked_task.pages == 0
+    assert crash_report.panicked_task.threads == 250
+    assert crash_report.panicked_task.pid == 0
+    assert crash_report.panicked_task.name == "kernel_task"
+    assert crash_report.panicked_thread.address == 0xFFFFFFE000002000
+    assert crash_report.panicked_thread.backtrace == 0xFFFFFFE000003000
+    assert crash_report.panicked_thread.tid == 512
+
+    # the dependency line belongs to the extension above it, it is not one of its own
+    (extension,) = crash_report.kernel_extensions_in_backtrace
+    assert extension.name == "com.example.driver.Buttons"
+    assert extension.version == "1.0d1"
+    assert extension.uuid == "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+    assert extension.start == 0xFFFFFFF010000000
+    assert extension.end == 0xFFFFFFF010003FFF
+
+    assert crash_report.last_started_kext == (
+        "com.example.driver.Last\t1 (addr 0xfffffff011000000, size 4096)"
+    )
+    assert crash_report.loaded_kexts == [
+        "com.example.driver.First\t1.0.0d1",
+        "com.example.driver.Second\t2.0",
+    ]
+
+
 def test_panic_210_with_panic_string_field():
     crash_report = get_crash_report_from_buf(
         "\n".join(
@@ -418,3 +529,104 @@ def test_panic_210_with_panic_string_field():
     assert crash_report.panic_string == "watchdog timeout"
     assert crash_report.panic_caller == 0xFFFFFFF015F5BA38
     assert crash_report.debugger_message == "panic"
+
+
+def test_bug_type_without_a_dedicated_parser():
+    crash_report = get_crash_report_from_buf(
+        '{"bug_type":"298","timestamp":"2026-01-02 03:04:05.00 +0000","incident_id":"ID"}\n'
+        "anything"
+    )
+    assert type(crash_report) is CrashReportBase
+    assert crash_report.bug_type == BugType("298")
+    assert crash_report.timestamp == datetime(2026, 1, 2, 3, 4, 5)
+
+
+def test_unknown_bug_type():
+    crash_report = get_crash_report_from_buf(
+        '{"bug_type":"not-a-bug-type","timestamp":"2026-01-02 03:04:05.00 +0000"}\n'
+    )
+    assert type(crash_report) is CrashReportBase
+    assert crash_report.bug_type_str == "not-a-bug-type"
+
+
+def test_every_listed_bug_type_selects_its_parser():
+    for parser in (UserModeCrashReport, KernelModeCrashReport):
+        assert parser.BUG_TYPES
+        for bug_type in parser.BUG_TYPES:
+            assert CrashReportBase.parser_for(bug_type.value) is parser
+
+
+def test_user_mode_rendering():
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
+    rendered = crash_report.__rich__()
+    assert isinstance(rendered, Text)
+    lines = rendered.plain.splitlines()
+    assert lines[0] == "2416C26A-72A8-4687-AFAA-7FCEB9D77458 2022-01-21 18:14:26"
+    assert lines[1].endswith("user_mode_crash_report_ios14_symbolicated.ips")
+    assert "Exception: EXC_CRASH (SIGABRT)" in lines
+    assert "Registers:" in lines
+    # four registers a row, each right-aligned in its own fixed-width cell
+    first_row = lines[lines.index("Registers:") + 1]
+    assert first_row == "".join(f"x{i} = 0x{0:016x} ".rjust(30) for i in range(4))
+    assert "\t[kaki] _HEADER (main + 0x6c)" in lines
+
+
+def test_kernel_mode_rendering():
+    lines = force_reset_report().__rich__().plain.splitlines()
+    assert lines[0] == "00000000-1111-2222-3333-444444444444 2026-01-02 03:04:05.670000"
+    assert lines[1] == "forceReset-full.ips"
+    assert lines[3:] == [
+        "Panic: btn_rst",
+        "Debugger message: panic",
+        "Panicked task: kernel_task (pid 0, 250 threads)",
+        "Panicked thread: tid 512 @ 0xffffffe000002000",
+        "Kernel Extensions in backtrace:",
+        "\tcom.example.driver.Buttons 1.0d1 [AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE]",
+    ]
+
+
+def test_str_is_colored(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    crash_report = force_reset_report()
+    rendered = str(crash_report)
+    assert "\x1b[" in rendered
+    assert ANSI_ESCAPE.sub("", rendered) == crash_report.__rich__().plain.expandtabs(8)
+
+
+def test_soft_wrap_keeps_lines_whole_on_a_narrow_console():
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
+    output = StringIO()
+    Console(file=output, width=20).print(crash_report, soft_wrap=True, end="")
+    assert output.getvalue() == crash_report.__rich__().plain.expandtabs(8)
+
+
+def test_str_honors_no_color(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    rendered = str(force_reset_report())
+    # NO_COLOR drops the colors (SGR 30-37) and leaves attributes such as bold and dim
+    codes = {
+        code
+        for match in re.findall(r"\x1b\[([0-9;]*)m", rendered)
+        for code in match.split(";")
+    }
+    assert codes <= {"0", "1", "2"}
+
+
+def test_parse_report_accepts_a_path_or_a_string():
+    path = REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    for location in (path, str(path)):
+        crash_report = parse_report(location)
+        assert isinstance(crash_report, UserModeCrashReport)
+        assert crash_report.filename == str(path)
+        assert crash_report.incident_id == "2416C26A-72A8-4687-AFAA-7FCEB9D77458"
+
+
+def test_parse_report_matches_parsing_an_open_file():
+    path = REPORTS / "kernel_mode_crash_report_ios16_forceReset-full.ips"
+    with open(path, encoding="utf-8") as report:
+        from_file = get_crash_report_from_file(report)
+    assert parse_report(path).__rich__().plain == from_file.__rich__().plain
