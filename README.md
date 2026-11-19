@@ -49,6 +49,21 @@ instead of a path.
 A report class is picked by bug type. To parse another one, subclass `CrashReportBase` and list
 the bug types it handles in `BUG_TYPES`.
 
+## Exit reasons
+
+A panic over a process which may not exit only gives the numbers of its exit reason. They are
+named on the line below it, and in `report.exit_reason` (`namespace`, `namespace_name`, `subcode`,
+`subcode_name`; `None` for any other panic):
+
+```
+Panic:  logd[26046] exited -- exit reason namespace 2 subcode 0x6 description: none
+Exit reason: SIGNAL, SIGABRT
+```
+
+Every namespace is named. A code is named when its namespace gives it a fixed meaning that could
+be read from XNU or from iOS (signals, jetsam, code signing, dyld, libxpc, exec, FrontBoard,
+libsystem, the watchdog, guards and RealityKit), and printed as a number otherwise.
+
 ## Symbolication
 
 A panic report gets the call stack of the thread which panicked, and `report.processes` holds the
