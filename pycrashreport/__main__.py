@@ -5,7 +5,11 @@ import typer
 from apple_symbols import KernelSymbols
 from rich.console import Console
 
-from pycrashreport.crash_report import KernelModeCrashReport, get_crash_report_from_file
+from pycrashreport.crash_report import (
+    KernelModeCrashReport,
+    PanicProcess,
+    get_crash_report_from_file,
+)
 
 app = typer.Typer(add_completion=False)
 
@@ -28,6 +32,19 @@ def main(
             "Requires --kernelcache and the `ipsw` tool."
         ),
     ] = None,
+    process: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--process",
+            "-p",
+            help="Name or pid of a process of a panic to print the call stack of every thread of. "
+            "May be given several times.",
+        ),
+    ] = None,
+    all_processes: Annotated[
+        bool,
+        typer.Option("--all", help="Print the threads of every process of a panic."),
+    ] = False,
 ) -> None:
     """
     Print an Apple crash report.
@@ -45,8 +62,22 @@ def main(
             raise typer.BadParameter(
                 f"Reading the kernel symbols of {kernelcache} failed: {e}"
             ) from e
+    processes: list[PanicProcess] = []
+    if process or all_processes:
+        if not isinstance(report, KernelModeCrashReport):
+            raise typer.BadParameter("--process and --all apply to panic reports only")
+        if all_processes:
+            processes = report.processes
+        for requested in process or []:
+            found = report.find_processes(requested)
+            if not found:
+                raise typer.BadParameter(f"The report holds no process {requested}")
+            processes += [entry for entry in found if entry not in processes]
     # printed as a renderable, so colors follow the terminal: none when the output is piped
-    Console(highlight=False).print(report, soft_wrap=True)
+    console = Console(highlight=False)
+    console.print(report, soft_wrap=True)
+    if processes and isinstance(report, KernelModeCrashReport):
+        console.print(report.render_processes(processes), soft_wrap=True)
 
 
 def cli() -> None:

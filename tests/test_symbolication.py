@@ -408,3 +408,63 @@ def test_cli_rejects_signatures_without_a_kernelcache(tmp_path: Path):
     )
     assert result.exit_code != 0
     assert "--kernel-signatures requires --kernelcache" in result.output
+
+
+@pytest.fixture
+def panic_file(tmp_path: Path) -> Path:
+    report_file = tmp_path / "panic-full.ips"
+    report_file.write_text(
+        json.dumps({"bug_type": "210", "timestamp": "2026-11-16 17:35:06.00 +0200"})
+        + "\n"
+        + json.dumps(panic_report()._data)
+    )
+    return report_file
+
+
+def test_cli_lists_the_threads_of_the_processes_asked_for(panic_file: Path):
+    result = RUNNER.invoke(app, [str(panic_file)])
+    assert result.exit_code == 0, result.output
+    assert "Process:" not in result.output
+
+    result = RUNNER.invoke(app, [str(panic_file), "-p", "food"])
+    assert result.exit_code == 0, result.output
+    assert "Process: food (pid 77, " in result.output
+    assert "Thread: tid 500 worker (panicked)" in result.output
+    assert "Process: kernel_task" not in result.output
+
+    # by pid, and asking twice for a process lists it once
+    result = RUNNER.invoke(
+        app, [str(panic_file), "-p", "0", "--process", "food", "-p", "77"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Process: kernel_task (pid 0, 1 threads)" in result.output
+    assert result.output.count("Process: food") == 1
+
+
+def test_cli_lists_the_threads_of_every_process(panic_file: Path):
+    result = RUNNER.invoke(app, [str(panic_file), "--all"])
+    assert result.exit_code == 0, result.output
+    assert "Process: kernel_task (pid 0, 1 threads)" in result.output
+    assert "Process: food (pid 77, " in result.output
+    assert (
+        f"kernel [{KEXT_UUID}] 0x{KEXT_VMADDR + TEXT_EXEC + KERNEL_SLIDE + 0x180:x} (+ 0x180)"
+        in result.output
+    )
+
+
+def test_cli_rejects_a_process_the_report_does_not_hold(panic_file: Path):
+    result = RUNNER.invoke(app, [str(panic_file), "-p", "nosuchd"])
+    assert result.exit_code == 2
+    assert "holds no process nosuchd" in result.output
+
+
+def test_cli_rejects_processes_of_a_report_which_is_not_a_panic():
+    result = RUNNER.invoke(
+        app,
+        [
+            str(REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips"),
+            "--all",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "apply to panic reports only" in result.output

@@ -67,6 +67,14 @@ stacks of every other thread it carries. Naming their frames takes symbols, thro
 pycrashreport panic-full.ips --kernelcache kernelcache.release.iphone17 --kernel-signatures symbolicator/kernel
 ```
 
+`-p` (name or pid, may be given several times) lists the threads of further processes of the panic,
+and `--all` those of every process:
+
+```shell
+pycrashreport panic-full.ips -p logd -p 1
+pycrashreport panic-full.ips --all
+```
+
 ```python
 from pathlib import Path
 

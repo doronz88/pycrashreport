@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from io import StringIO
-from typing import IO, Any, ClassVar, List, Mapping, Optional, Union
+from typing import IO, Any, ClassVar, Iterable, List, Mapping, Optional, Union
 
 from apple_symbols import (
     DeviceSupportSymbols,
@@ -1013,9 +1013,34 @@ class KernelModeCrashReport(CrashReportBase):
                 self._render_frame(text, frame)
             self._render_missing_symbols(text)
 
+    def find_processes(self, process: str) -> List[PanicProcess]:
+        """Get the processes of the report with the given name, or the one with the given pid."""
+        if process.isdigit():
+            return [found for found in self.processes if found.pid == int(process)]
+        return [found for found in self.processes if found.name == process]
+
+    def render_processes(self, processes: Iterable[PanicProcess]) -> Text:
+        """Render the call stack of every thread of the given processes."""
+        text = Text()
+        for process in processes:
+            text.append("Process: ", style=STYLE_LABEL)
+            text.append(process.name or "?", style=STYLE_IMAGE)
+            text.append(f" (pid {process.pid}, {len(process.threads)} threads)\n")
+            for thread in process.threads:
+                text.append("\tThread: ", style=STYLE_LABEL)
+                text.append(f"tid {thread.tid}")
+                if thread.name:
+                    text.append(f" {thread.name}", style=STYLE_DETAIL)
+                if self.panicked_thread and thread.tid == self.panicked_thread.tid:
+                    text.append(" (panicked)", style=STYLE_FAILURE)
+                text.append("\n")
+                for frame in thread.frames:
+                    self._render_frame(text, frame, indent="\t\t")
+        return text
+
     @staticmethod
-    def _render_frame(text: Text, frame: PanicFrame) -> None:
-        text.append("\t")
+    def _render_frame(text: Text, frame: PanicFrame, indent: str = "\t") -> None:
+        text.append(indent)
         text.append("kernel" if frame.kernel else "user  ", style=STYLE_IDENTIFIER)
         text.append(" [")
         text.append(frame.image or "?", style=STYLE_IMAGE)
