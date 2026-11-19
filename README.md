@@ -18,6 +18,35 @@ Using pip:
 python3 -m pip install -U pycrashreport
 ```
 
+# Usage
+
+```shell
+pycrashreport /path/to/report.ips
+```
+
+The output is colored with [rich](https://github.com/Textualize/rich) on a terminal, and plain
+when piped.
+
+From Python, a report is a rich renderable. `str(report)` gives the same text with ANSI colors
+(set `NO_COLOR` to drop them), so a plain `print()` works too. Pass `soft_wrap=True` when printing
+through a console, so long lines such as register rows are not reflowed to the terminal width:
+
+```python
+from rich.console import Console
+
+from pycrashreport.crash_report import get_crash_report_from_file
+
+with open("/path/to/report.ips") as f:
+    report = get_crash_report_from_file(f)
+
+Console().print(report, soft_wrap=True)  # colors follow the terminal
+print(report)                            # always colored
+print(report.bug_type, report.incident_id, report.timestamp)
+```
+
+A report class is picked by bug type. To parse another one, subclass `CrashReportBase` and list
+the bug types it handles in `BUG_TYPES`.
+
 # Usage examples
 
 ## iOS crash dumps
