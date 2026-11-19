@@ -3,19 +3,31 @@ import os
 import posixpath
 import re
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from io import StringIO
 from typing import IO, Any, ClassVar, List, Mapping, Optional, Union
 
+from apple_symbols import (
+    DeviceSupportSymbols,
+    KernelSymbols,
+    SymbolImage,
+    find_device_support_symbols,
+)
 from rich.console import Console
 from rich.text import Text
 
 Frame = namedtuple("Frame", "image_name image_base image_offset symbol symbol_offset")
 Register = namedtuple("Register", "name value")
 KernelExtension = namedtuple("KernelExtension", "name version uuid start end")
+
+#: Kinds of ``binaryImages`` entries a panic report locates its frames with
+IMAGE_KIND_ABSOLUTE = "A"
+IMAGE_KIND_SHARED_CACHE = "S"
+IMAGE_KINDS_KERNEL = frozenset({"K", "T"})
+KERNEL_IMAGE_NAME = "kernel"
 
 
 STYLE_INCIDENT = "bold cyan"
@@ -72,6 +84,34 @@ class PanickedThread:
     address: int
     backtrace: int
     tid: int
+
+
+@dataclass
+class PanicFrame:
+    """One address of a call stack of a panic report, innermost first."""
+
+    address: int
+    kernel: bool = False
+    #: File name of the containing image when the symbols tell it, its UUID otherwise
+    image: Optional[str] = None
+    image_offset: Optional[int] = None
+    symbol: Optional[str] = None
+    symbol_offset: Optional[int] = None
+
+
+@dataclass
+class PanicThread:
+    tid: int
+    name: Optional[str] = None
+    #: The kernel stack of a thread caught in the kernel comes on top of its user stack
+    frames: List[PanicFrame] = field(default_factory=list)
+
+
+@dataclass
+class PanicProcess:
+    pid: int
+    name: str
+    threads: List[PanicThread] = field(default_factory=list)
 
 
 class BugType(Enum):
@@ -309,6 +349,48 @@ class CrashReportBase:
     def name(self) -> str:
         return self._metadata.get("name")
 
+    @property
+    def product_type(self) -> Optional[str]:
+        """Model of the device the report came from, e.g. ``iPhone17,3``, when the report tells."""
+        return None
+
+    @property
+    def build_version(self) -> Optional[str]:
+        """Build of the OS the report came from, e.g. ``23E246``, when the report tells."""
+        return None
+
+    @cached_property
+    def device_support_symbols(self) -> Optional[DeviceSupportSymbols]:
+        """Symbols naming the userland frames the report left unnamed.
+
+        Defaults to the Xcode DeviceSupport of the device and build the report came from, when
+        this host has it. Assign other symbols, or ``None`` for none, before reading any frames.
+        """
+        if not self.product_type or not self.build_version:
+            return None
+        root = find_device_support_symbols(self.product_type, self.build_version)
+        if root is None:
+            return None
+        try:
+            return DeviceSupportSymbols.load(root)
+        except OSError:
+            return None
+
+    def _symbolicate_user_frame(
+        self, image: SymbolImage, offset: int, innermost: bool
+    ) -> Optional[tuple]:
+        """Name the function at ``offset`` of a userland image, with the offset from its start."""
+        symbols = self.device_support_symbols
+        if symbols is None:
+            return None
+        # All but the innermost frame hold a return address, which may already belong to the
+        # next function when the call never returns. Look up the call instruction instead.
+        delta = 0 if innermost else 1
+        symbol = symbols.symbolicate(image, image.vmaddr + offset - delta)
+        if symbol is None:
+            return None
+        return symbol[0], symbol[1] + delta
+
     def _render_details(self, text: Text) -> None:
         """Append what follows the summary. Nothing, unless a subclass knows the format."""
 
@@ -346,6 +428,19 @@ class UserModeCrashReport(CrashReportBase):
                 field = field.strip()
                 return field
 
+    @property
+    def product_type(self) -> Optional[str]:
+        if self._is_json:
+            return self._data.get("modelCode")
+        return self._parse_field("Hardware Model")
+
+    @property
+    def build_version(self) -> Optional[str]:
+        if self._is_json:
+            return (self._data.get("osVersion") or {}).get("build")
+        match = re.search(r"\(([^)]+)\)", self._parse_field("OS Version") or "")
+        return match.group(1) if match else None
+
     @cached_property
     def faulting_thread(self) -> int:
         if self._is_json:
@@ -361,13 +456,22 @@ class UserModeCrashReport(CrashReportBase):
             images = self._data["usedImages"]
             for frame in self._data["threads"][thread_index]["frames"]:
                 image = images[frame["imageIndex"]]
+                symbol = frame.get("symbol")
+                symbol_offset = frame.get("symbolLocation")
+                if symbol is None:
+                    # the device names what it can; the rest is up to the host's symbols
+                    named = self._symbolicate_json_frame(
+                        image, frame, innermost=not result
+                    )
+                    if named is not None:
+                        symbol, symbol_offset = named
                 result.append(
                     Frame(
                         image_name=image.get("path"),
                         image_base=image.get("base"),
-                        symbol=frame.get("symbol"),
+                        symbol=symbol,
                         image_offset=frame.get("imageOffset"),
-                        symbol_offset=frame.get("symbolLocation"),
+                        symbol_offset=symbol_offset,
                     )
                 )
         else:
@@ -407,6 +511,18 @@ class UserModeCrashReport(CrashReportBase):
                     in_frames = True
 
         return result
+
+    def _symbolicate_json_frame(
+        self, image: Mapping[str, Any], frame: Mapping[str, Any], innermost: bool
+    ) -> Optional[tuple]:
+        symbols = self.device_support_symbols
+        offset = frame.get("imageOffset")
+        if symbols is None or offset is None or not image.get("uuid"):
+            return None
+        symbol_image = symbols.image_by_uuid(image["uuid"])
+        if symbol_image is None:
+            return None
+        return self._symbolicate_user_frame(symbol_image, offset, innermost)
 
     @cached_property
     def registers(self) -> List[Register]:
@@ -565,6 +681,137 @@ class KernelModeCrashReport(CrashReportBase):
             )
         elif isinstance(self._data, str):
             self._panic_text = self._data
+
+    #: Symbols naming the kernel frames, which need the kernelcache the device ran. Assign them
+    #: before reading any frames.
+    kernel_symbols: Optional[KernelSymbols] = None
+
+    def _report_field(self, name: str) -> Optional[str]:
+        if self._is_json and isinstance(self._data, dict):
+            return self._data.get(name)
+        return None
+
+    @property
+    def product_type(self) -> Optional[str]:
+        return self._report_field("product")
+
+    @property
+    def build_version(self) -> Optional[str]:
+        # "iPhone OS 16.2 (20C65)"
+        match = re.search(r"\(([^)]+)\)\s*$", self._report_field("build") or "")
+        return match.group(1) if match else None
+
+    @cached_property
+    def _reported_kernel_images(self) -> dict:
+        """Names the panic text itself gives to kernel images, by their lowercase UUID."""
+        names = {}
+        if self.kernel_uuid:
+            names[self.kernel_uuid.lower()] = KERNEL_IMAGE_NAME
+        for extension in self.kernel_extensions_in_backtrace:
+            names[extension.uuid.lower()] = extension.name
+        return names
+
+    def _kernel_frame(
+        self, uuid: str, base: int, offset: int, innermost: bool
+    ) -> PanicFrame:
+        frame = PanicFrame(
+            address=base + offset,
+            kernel=True,
+            image=self._reported_kernel_images.get(uuid.lower(), uuid),
+            image_offset=offset,
+        )
+        if self.kernel_symbols is None:
+            return frame
+        image = self.kernel_symbols.image_by_uuid(uuid)
+        if image is None:
+            return frame
+        frame.image = image.name
+        delta = 0 if innermost else 1
+        # the report gives where `__TEXT_EXEC` of a kernel image got loaded
+        symbol = self.kernel_symbols.symbolicate(image.text_exec + offset - delta)
+        if symbol is not None:
+            frame.symbol = symbol[0]
+            frame.symbol_offset = symbol[1] + delta
+        return frame
+
+    def _user_frame(
+        self, uuid: str, base: int, kind: str, offset: int, innermost: bool
+    ) -> PanicFrame:
+        frame = PanicFrame(address=base + offset, image=uuid, image_offset=offset)
+        symbols = self.device_support_symbols
+        if symbols is None:
+            return frame
+        if kind == IMAGE_KIND_SHARED_CACHE:
+            # located by its offset in the whole shared cache, whose UUID this is
+            cache_base = symbols.shared_cache_base
+            image = (
+                symbols.image_by_address(cache_base + offset)
+                if cache_base is not None
+                else None
+            )
+            if image is not None:
+                offset = cache_base + offset - image.vmaddr
+        else:
+            image = symbols.image_by_uuid(uuid)
+        if image is None:
+            return frame
+        frame.image = image.name
+        frame.image_offset = offset
+        symbol = self._symbolicate_user_frame(image, offset, innermost)
+        if symbol is not None:
+            frame.symbol, frame.symbol_offset = symbol
+        return frame
+
+    def _frames(self, thread: Mapping[str, Any]) -> List[PanicFrame]:
+        images = self._report_field("binaryImages") or []
+        frames: List[PanicFrame] = []
+        for key in ("kernelFrames", "userFrames"):
+            for index, offset in thread.get(key) or []:
+                if not 0 <= index < len(images):
+                    continue
+                uuid, base, kind = images[index][:3]
+                if kind == IMAGE_KIND_ABSOLUTE:
+                    if offset:
+                        frames.append(
+                            PanicFrame(address=offset, kernel=key == "kernelFrames")
+                        )
+                elif kind in IMAGE_KINDS_KERNEL:
+                    frames.append(self._kernel_frame(uuid, base, offset, not frames))
+                else:
+                    frames.append(
+                        self._user_frame(uuid, base, kind, offset, not frames)
+                    )
+        return frames
+
+    @cached_property
+    def processes(self) -> List[PanicProcess]:
+        """Every process the report holds, with the call stack of each of its threads."""
+        result = []
+        for pid, process in (self._report_field("processByPid") or {}).items():
+            panic_process = PanicProcess(
+                pid=int(pid), name=process.get("procname") or ""
+            )
+            for tid, thread in (process.get("threadById") or {}).items():
+                panic_process.threads.append(
+                    PanicThread(
+                        tid=int(tid),
+                        name=thread.get("name"),
+                        frames=self._frames(thread),
+                    )
+                )
+            result.append(panic_process)
+        return result
+
+    @cached_property
+    def panicked_thread_frames(self) -> List[PanicFrame]:
+        """Call stack of the thread which panicked, empty when the report does not hold it."""
+        if self.panicked_thread is None:
+            return []
+        for process in self.processes:
+            for thread in process.threads:
+                if thread.tid == self.panicked_thread.tid:
+                    return thread.frames
+        return []
 
     def _panic_lines(self) -> List[str]:
         return self._panic_text.splitlines()
@@ -760,6 +1007,52 @@ class KernelModeCrashReport(CrashReportBase):
                 text.append(extension.name, style=STYLE_IMAGE)
                 text.append(f" {extension.version} ")
                 text.append(f"[{extension.uuid}]\n", style=STYLE_IDENTIFIER)
+        if self.panicked_thread_frames:
+            text.append("Panicked thread backtrace:\n", style=STYLE_LABEL)
+            for frame in self.panicked_thread_frames:
+                self._render_frame(text, frame)
+            self._render_missing_symbols(text)
+
+    @staticmethod
+    def _render_frame(text: Text, frame: PanicFrame) -> None:
+        text.append("\t")
+        text.append("kernel" if frame.kernel else "user  ", style=STYLE_IDENTIFIER)
+        text.append(" [")
+        text.append(frame.image or "?", style=STYLE_IMAGE)
+        text.append("] ")
+        text.append(f"0x{frame.address:x}", style=STYLE_ADDRESS)
+        if frame.symbol is not None:
+            text.append(" (")
+            text.append(frame.symbol, style=STYLE_SYMBOL)
+            text.append(f" + 0x{frame.symbol_offset:x})")
+        elif frame.image_offset is not None:
+            text.append(" (+ ")
+            text.append(f"0x{frame.image_offset:x}", style=STYLE_ADDRESS)
+            text.append(")")
+        text.append("\n")
+
+    def _render_missing_symbols(self, text: Text) -> None:
+        """Say which symbols would name the frames left unnamed."""
+        frames = self.panicked_thread_frames
+        if any(frame.kernel for frame in frames):
+            if self.kernel_symbols is None:
+                text.append(
+                    "\tKernel frames are named given the kernelcache the device ran.\n",
+                    style=STYLE_IDENTIFIER,
+                )
+            elif not self.kernel_symbols.has_symbols:
+                text.append(
+                    "\tThe kernelcache holds no symbols, kernel frames are named given signatures for it.\n",
+                    style=STYLE_IDENTIFIER,
+                )
+        if self.device_support_symbols is None and not all(
+            frame.kernel for frame in frames
+        ):
+            text.append(
+                f"\tUser frames are named given the Xcode DeviceSupport of "
+                f"{self.product_type} ({self.build_version}).\n",
+                style=STYLE_IDENTIFIER,
+            )
 
 
 def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
