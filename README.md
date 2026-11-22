@@ -8,6 +8,8 @@ Currently supported crash types:
 - User mode crash reports
 - Kernel mode crash reports
 - Stackshots (`stacks-*.ips`, as sysdiagnose takes)
+- Spindump reports of a process over a resource limit (`*.diskwrites_resource-*.ips`,
+  `*.cpu_resource-*.ips`, `*.wakeups_resource-*.ips`)
 
 All other crash reports will parse only basic metadata information.
 
@@ -49,6 +51,26 @@ instead of a path.
 
 A report class is picked by bug type. To parse another one, subclass `CrashReportBase` and list
 the bug types it handles in `BUG_TYPES`.
+
+## Userland crashes
+
+A crash tells its process, what ended it and which thread crashed, before the registers and the
+call stack of that thread. `--all` lists the call stack of every other thread as well:
+
+```
+Process: avconferenced (pid 469) /usr/libexec/avconferenced
+Parent: launchd (pid 1)
+Device: iPhone19,4 (24B91034)
+Exception: EXC_CRASH (SIGABRT)
+Exception Codes: 0x0000000000000000, 0x0000000000000000
+Termination: SIGNAL, Abort trap: 6, by backboardd (pid 73)
+Crashed thread: 0, tid 8152, queue com.apple.main-thread
+```
+
+From Python: `report.process_name`, `.pid`, `.process_path`, `.parent_name`, `.parent_pid`,
+`.signal`, `.exception_codes`, `.termination` (as the report gives it), `.termination_reason` (the
+line above) and `.threads`, each with its `tid`, `name`, `queue`, `crashed` and `frames`. A report
+in the older text format has no `threads`.
 
 ## Exit reasons
 
@@ -137,6 +159,35 @@ report.kernel_symbols = KernelSymbols.load(Path("kernelcache.release.iphone17"))
 for frame in report.panicked_thread_frames:
     print(frame.image, frame.symbol, frame.symbol_offset)
 ```
+
+## Spindump reports
+
+A process which went over its limit of disk writes, CPU or wakeups gets a report of the samples
+taken of it meanwhile, with not one of its frames named. It is summarized by the event and the
+heaviest stack of the process, its frames named given the Xcode DeviceSupport of the device; `-p`
+and `--all` print the call tree of the processes sampled, each frame after its count of samples:
+
+```
+Event: disk writes
+Process: siriactionsd (pid 140)
+Writes: 1073.75 MB of file backed memory dirtied over 67 seconds (16.05 MB per second average), exceeding limit of 12.43 KB per second over 86400 seconds
+Heaviest stack:
+	17  [libsqlite3.dylib] 0x1b25765b0 (sqlite3_step + 0x3bc)
+	17  [libsystem_kernel.dylib] 0x24c697b54 (guarded_pwrite_np + 0x8)
+```
+
+```python
+report = parse_report("/path/to/siriactionsd.diskwrites_resource.ips")
+print(report.event, report.command, report.pid, report.fields["Writes"])
+for frame in report.heaviest_stack:
+    print(frame.count, frame.image, frame.symbol, frame.symbol_offset)
+for process in report.processes:            # also .target_process, .get_process(pid), .find_processes()
+    for depth, frame in process.walk():     # or process.frames and frame.children
+        print("  " * depth, frame.count, frame.image, hex(frame.address or 0), frame.symbol or frame.note)
+```
+
+`render_processes(report, processes, all_processes, running)` renders what `-p`, `--all` and
+`--running` print, for whichever kind of report holds processes.
 
 # Usage examples
 

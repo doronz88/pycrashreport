@@ -726,3 +726,51 @@ def test_panic_without_an_exit_reason():
 
     assert force_reset_report().exit_reason is None
     assert "Exit reason" not in force_reset_report().__rich__().plain
+
+
+def test_user_mode_tells_the_process_and_what_ended_it():
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips"
+    )
+    assert (crash_report.process_name, crash_report.pid) == ("sleep", 10277)
+    assert crash_report.process_path == "/bin/sleep"
+    assert (crash_report.parent_name, crash_report.parent_pid) == ("zsh", 10192)
+    assert crash_report.signal == "SIGSEGV"
+    assert crash_report.exception_codes == "0x0000000000000001, 0x0000000000000000"
+    assert crash_report.termination["namespace"] == "SIGNAL"
+    assert (
+        crash_report.termination_reason
+        == "SIGNAL, Segmentation fault: 11, by exc handler (pid 10277)"
+    )
+
+    (thread,) = crash_report.threads
+    assert (thread.index, thread.tid, thread.queue, thread.crashed) == (
+        0,
+        135513,
+        "com.apple.main-thread",
+        True,
+    )
+    assert thread.frames == crash_report.frames
+
+    lines = crash_report.__rich__().plain.splitlines()
+    assert lines[3:10] == [
+        "Process: sleep (pid 10277) /bin/sleep",
+        "Parent: zsh (pid 10192)",
+        "Device: MacBookPro15,1 (21C52)",
+        "Exception: EXC_BAD_ACCESS (SIGSEGV)",
+        "Exception Codes: 0x0000000000000001, 0x0000000000000000",
+        "Termination: SIGNAL, Segmentation fault: 11, by exc handler (pid 10277)",
+        "Crashed thread: 0, tid 135513, queue com.apple.main-thread",
+    ]
+    assert crash_report.render_threads().plain.splitlines()[0] == (
+        "Thread: 0, tid 135513, queue com.apple.main-thread (crashed)"
+    )
+
+
+def test_user_mode_text_format_has_no_threads():
+    crash_report = parse_report(
+        REPORTS / "user_mode_crash_report_ios14_symbolicated.ips"
+    )
+    assert crash_report.threads == []
+    assert crash_report.signal is None and crash_report.termination is None
+    assert crash_report.process_name == "kaki [12225]"

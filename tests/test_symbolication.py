@@ -11,6 +11,7 @@ from pycrashreport.__main__ import app
 from pycrashreport.crash_report import (
     KernelModeCrashReport,
     PanicFrame,
+    SpindumpCrashReport,
     StackshotCrashReport,
     get_crash_report_from_buf,
     parse_report,
@@ -459,16 +460,29 @@ def test_cli_rejects_a_process_the_report_does_not_hold(panic_file: Path):
     assert "holds no process nosuchd" in result.output
 
 
-def test_cli_rejects_processes_of_a_report_without_any():
-    result = RUNNER.invoke(
-        app,
-        [
-            str(REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips"),
-            "--all",
-        ],
+def test_cli_lists_the_threads_of_a_crash():
+    crash = str(REPORTS / "user_mode_crash_report_monterey_non_symbolicated.ips")
+    result = RUNNER.invoke(app, [crash, "--all"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "Thread: 0, tid 135513, queue com.apple.main-thread (crashed)" in result.output
     )
+
+    # a crash is of one process
+    result = RUNNER.invoke(app, [crash, "-p", "sleep"])
     assert result.exit_code == 2
-    assert "apply to panic and stackshot" in result.output
+    assert "--process and --running apply to" in result.output
+
+
+def test_cli_rejects_processes_of_a_report_without_any(tmp_path: Path):
+    report_file = tmp_path / "JetsamEvent.ips"
+    report_file.write_text(
+        json.dumps({"bug_type": "298", "timestamp": "2026-11-16 17:35:06.00 +0200"})
+        + "\nanything"
+    )
+    result = RUNNER.invoke(app, [str(report_file), "--all"])
+    assert result.exit_code == 2
+    assert "--process, --all and --running apply to" in result.output
 
 
 UNSLID_KERNELCACHE_BASE = 0xFFFFFE0000000000
@@ -722,3 +736,172 @@ def test_cli_lists_the_threads_of_a_stackshot(stackshot_file: Path):
     assert result.exit_code == 0, result.output
     assert "Process: kernel_task" in result.output
     assert "Process: food (pid 77, 1 threads)" in result.output
+
+
+SPINDUMP_TEXT = f"""Date/Time:        2026-11-17 02:35:14.885 -0800
+OS Version:       iPhone OS 27.2.1 (Build 24B91034)
+Report Version:   73
+
+Data Source:      Microstackshots
+Shared Cache:     {SHARED_CACHE_UUID.upper()} slid base address 0x{SHARED_CACHE_BASE + SHARED_CACHE_SLIDE:x}
+
+Command:          food
+Path:             /usr/libexec/food
+PID:              77
+
+Event:            disk writes
+Action taken:     none
+Writes:           1073.75 MB of file backed memory dirtied over 67 seconds
+Duration:         66.92s
+
+Hardware model:   iPhone19,4
+Active cpus:      6
+
+Heaviest stack for the target process:
+  5  ??? (food + 64) [0x104000040]
+  5  ??? (libfoo.dylib + 516) [0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x204:x}]
+  3  ??? (libfoo.dylib + 260) [0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x104:x}]
+
+
+Powerstats for:   food [77]
+UUID:             {DAEMON_UUID.upper()}
+Path:             /usr/libexec/food
+Num samples:      5 (100%)
+  5  ??? (food + 64) [0x104000040]
+    5  ??? (libfoo.dylib + 516) [0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x204:x}]
+      3  ??? (libfoo.dylib + 260) [0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x104:x}]
+        3   <on behalf of food [77] (originated by UNKNOWN [1])>
+      2  already_named + 8 (libfoo.dylib + 780) [0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x30C:x}]
+
+  Binary Images:
+           0x104000000 -                ???  com.example.food 1.0 (2) <{DAEMON_UUID.upper()}>  /usr/libexec/food
+           0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE:x} -        0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0xFFF:x}  libfoo.dylib     <{LIBFOO_UUID.upper()}>  /usr/lib/libfoo.dylib
+
+
+Powerstats for:   helperd
+UUID:             AAAAAAAA-0000-1111-2222-333333333333
+Num samples:      1 (20%)
+  1  ??? (helperd + 16) [0x100000010]
+  1  <Kernel mode>
+
+  Binary Images:
+           0x100000000 -                ???  helperd <AAAAAAAA-0000-1111-2222-333333333333>  /usr/libexec/helperd
+"""
+
+
+def spindump_report() -> SpindumpCrashReport:
+    report = get_crash_report_from_buf(
+        json.dumps(
+            {
+                "bug_type": "145",
+                "timestamp": "2026-11-17 02:36:22.00 -0800",
+                "incident_id": "ID",
+            }
+        )
+        + "\n"
+        + SPINDUMP_TEXT,
+        filename="food.diskwrites_resource.ips",
+    )
+    assert isinstance(report, SpindumpCrashReport)
+    return report
+
+
+def test_spindump_summary():
+    report = spindump_report()
+    assert (report.event, report.command, report.pid) == ("disk writes", "food", 77)
+    assert (report.product_type, report.build_version) == ("iPhone19,4", "24B91034")
+    assert report.fields["Duration"] == "66.92s"
+    assert report.__rich__().plain.splitlines()[3:] == [
+        "Event: disk writes",
+        "Process: food (pid 77)",
+        "Action taken: none",
+        "Writes: 1073.75 MB of file backed memory dirtied over 67 seconds",
+        "Duration: 66.92s",
+        "Device: iPhone19,4, iPhone OS 27.2.1 (Build 24B91034)",
+        "Heaviest stack:",
+        "\t5   [food] 0x104000040 (+ 0x40)",
+        f"\t5   [libfoo.dylib] 0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x204:x} (+ 0x204)",
+        f"\t3   [libfoo.dylib] 0x{LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x104:x} (+ 0x104)",
+        "\tFrames are named given the Xcode DeviceSupport of iPhone19,4 (24B91034).",
+    ]
+
+
+def test_spindump_processes():
+    report = spindump_report()
+    food, helperd = report.processes
+    assert (food.name, food.pid, food.uuid, food.path) == (
+        "food",
+        77,
+        DAEMON_UUID.upper(),
+        "/usr/libexec/food",
+    )
+    assert report.target_process is food and report.get_process(77) is food
+    assert (helperd.name, helperd.pid) == ("helperd", None)
+    assert report.find_processes("helperd") == [helperd]
+
+    # an image is named after its file, whatever identifier and version the report lists it by
+    assert [(image.name, image.uuid, image.end) for image in food.images] == [
+        ("food", DAEMON_UUID, None),
+        ("libfoo.dylib", LIBFOO_UUID, LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0xFFF),
+    ]
+
+    (root,) = food.frames
+    assert (root.count, root.image, root.image_offset) == (5, "food", 64)
+    (caller,) = root.children
+    leaf, named = caller.children
+    assert (leaf.count, leaf.address) == (3, LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x104)
+    # a line which is not a frame
+    assert [(note.address, note.note) for note in leaf.children] == [
+        (None, "<on behalf of food [77] (originated by UNKNOWN [1])>")
+    ]
+    assert (named.symbol, named.symbol_offset) == ("already_named", 8)
+    assert [depth for depth, _frame in food.walk()] == [0, 1, 2, 3, 2]
+    assert [frame.note for frame in helperd.frames] == [None, "<Kernel mode>"]
+
+
+def test_spindump_frames_are_named(symbols: DeviceSupportSymbols):
+    report = spindump_report()
+    report.device_support_symbols = symbols
+
+    food = report.processes[0]
+    frames = {frame.image_offset: frame for _depth, frame in food.walk()}
+    # where a sample ended is where the thread was, the rest is where it returns to
+    assert (frames[260].symbol, frames[260].symbol_offset) == ("foo", 4)
+    assert (frames[516].symbol, frames[516].symbol_offset) == ("bar", 4)
+    # the symbols do not hold the executables of processes, and a name the report gave is kept
+    assert frames[64].symbol is None
+    assert frames[780].symbol == "already_named"
+
+    assert [(frame.symbol, frame.symbol_offset) for frame in report.heaviest_stack] == [
+        (None, None),
+        ("bar", 4),
+        ("foo", 4),
+    ]
+    assert "Frames are named given" not in report.__rich__().plain
+
+
+def test_cli_lists_the_call_tree_of_a_spindump_process(tmp_path: Path):
+    report_file = tmp_path / "food.diskwrites_resource.ips"
+    report_file.write_text(
+        json.dumps({"bug_type": "145", "timestamp": "2026-11-17 02:36:22.00 -0800"})
+        + "\n"
+        + SPINDUMP_TEXT
+    )
+    result = RUNNER.invoke(app, [str(report_file)])
+    assert result.exit_code == 0, result.output
+    assert "Event: disk writes" in result.output
+    assert "Process: helperd" not in result.output
+
+    result = RUNNER.invoke(app, [str(report_file), "-p", "77"])
+    assert result.exit_code == 0, result.output
+    assert "Process: food (pid 77, samples: 5 (100%))" in result.output
+    assert "    5   [libfoo.dylib]" in result.output
+    assert "<on behalf of food [77] (originated by UNKNOWN [1])>" in result.output
+    assert "Process: helperd" not in result.output
+
+    result = RUNNER.invoke(app, [str(report_file), "--all"])
+    assert "Process: helperd (samples: 1 (20%))" in result.output
+
+    result = RUNNER.invoke(app, [str(report_file), "--running"])
+    assert result.exit_code == 2
+    assert "--running applies to panic and stackshot" in result.output
