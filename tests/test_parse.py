@@ -753,11 +753,12 @@ def test_user_mode_tells_the_process_and_what_ended_it():
     assert thread.frames == crash_report.frames
 
     lines = crash_report.__rich__().plain.splitlines()
-    assert lines[3:10] == [
+    assert lines[3:11] == [
         "Process: sleep (pid 10277) /bin/sleep",
         "Parent: zsh (pid 10192)",
         "Device: MacBookPro15,1 (21C52)",
         "Exception: EXC_BAD_ACCESS (SIGSEGV)",
+        "Exception Subtype: KERN_INVALID_ADDRESS at 0x0000000000000000",
         "Exception Codes: 0x0000000000000001, 0x0000000000000000",
         "Termination: SIGNAL, Segmentation fault: 11, by exc handler (pid 10277)",
         "Crashed thread: 0, tid 135513, queue com.apple.main-thread",

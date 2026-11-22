@@ -194,11 +194,14 @@ for process in report.processes:            # also .target_process, .get_process
 ## iOS crash dumps
 
 ```
-➜  pycrashreport git:(master) ✗ pycrashreport /tmp/itunescloudd-2021-10-22-001453.ips
-13917FF0-E1B1-4652-84C2-85516D101DFE 2021-10-22 00:14:53.00 +0300
-/tmp/itunescloudd-2021-10-22-001453.ips
+➜  pycrashreport tests/user_mode_crash_report_ios14_non_symbolicated_abort.ips
+13917FF0-E1B1-4652-84C2-85516D101DFE 2021-10-22 00:14:53
+tests/user_mode_crash_report_ios14_non_symbolicated_abort.ips
 
+Process: itunescloudd [692] /System/Library/PrivateFrameworks/iTunesCloud.framework/Support/itunescloudd
+Device: iPhone11,8 (18H17)
 Exception: EXC_CRASH (SIGABRT)
+Exception Codes: 0x0000000000000000, 0x0000000000000000
 Application Specific Information: abort() called
 Registers:
       x0 = 0x0000000000000000       x1 = 0x0000000000000000       x2 = 0x0000000000000000       x3 = 0x0000000000000000
@@ -212,32 +215,38 @@ Registers:
       pc = 0x00000001c3e1a334     cpsr = 0x0000000040000000      esr = 0x0000000056000080
 
 Frames:
-	[libsystem_kernel.dylib] 0x1c3df1000 + 0x29334
-	[libsystem_pthread.dylib] 0x1e189f000 + 0x2a9c
-	[libsystem_c.dylib] 0x19ef2e000 + 0x77b84
-	[libc++abi.dylib] 0x1aa804000 + 0x13bb8
-	[libc++abi.dylib] 0x1aa804000 + 0x4ec8
-	[libobjc.A.dylib] 0x1aa70e000 + 0x705c
-	[libc++abi.dylib] 0x1aa804000 + 0x12fa0
-	[libc++abi.dylib] 0x1aa804000 + 0x12f2c
-	[libdispatch.dylib] 0x1957c7000 + 0x4830
-	[libdispatch.dylib] 0x1957c7000 + 0x7cf4
-	[libdispatch.dylib] 0x1957c7000 + 0x7384
-	[libdispatch.dylib] 0x1957c7000 + 0x15fe0
-	[libdispatch.dylib] 0x1957c7000 + 0x167d8
-	[libsystem_pthread.dylib] 0x1e189f000 + 0x3768
-	[libsystem_pthread.dylib] 0x1e189f000 + 0xa74c
+        [libsystem_kernel.dylib] 0x1c3df1000 + 0x29334
+        [libsystem_pthread.dylib] 0x1e189f000 + 0x2a9c
+        [libsystem_c.dylib] 0x19ef2e000 + 0x77b84
+        [libc++abi.dylib] 0x1aa804000 + 0x13bb8
+        [libc++abi.dylib] 0x1aa804000 + 0x4ec8
+        [libobjc.A.dylib] 0x1aa70e000 + 0x705c
+        [libc++abi.dylib] 0x1aa804000 + 0x12fa0
+        [libc++abi.dylib] 0x1aa804000 + 0x12f2c
+        [libdispatch.dylib] 0x1957c7000 + 0x4830
+        [libdispatch.dylib] 0x1957c7000 + 0x7cf4
+        [libdispatch.dylib] 0x1957c7000 + 0x7384
+        [libdispatch.dylib] 0x1957c7000 + 0x15fe0
+        [libdispatch.dylib] 0x1957c7000 + 0x167d8
+        [libsystem_pthread.dylib] 0x1e189f000 + 0x3768
+        [libsystem_pthread.dylib] 0x1e189f000 + 0xa74c
 ```
 
 ## macOS intel dumps
 
 ```
-➜  pycrashreport git:(master) ✗ pycrashreport tests/crash_report_monterey_non_symbolicated.ips
-051760D9-97FF-475F-8B61-B0FDFB04D484 2022-01-06 15:09:22.00 +0200
-tests/crash_report_monterey_non_symbolicated.ips
+➜  pycrashreport tests/user_mode_crash_report_monterey_non_symbolicated.ips
+051760D9-97FF-475F-8B61-B0FDFB04D484 2022-01-06 15:09:22
+tests/user_mode_crash_report_monterey_non_symbolicated.ips
 
-Exception: EXC_BAD_ACCESS
+Process: sleep (pid 10277) /bin/sleep
+Parent: zsh (pid 10192)
+Device: MacBookPro15,1 (21C52)
+Exception: EXC_BAD_ACCESS (SIGSEGV)
 Exception Subtype: KERN_INVALID_ADDRESS at 0x0000000000000000
+Exception Codes: 0x0000000000000001, 0x0000000000000000
+Termination: SIGNAL, Segmentation fault: 11, by exc handler (pid 10277)
+Crashed thread: 0, tid 135513, queue com.apple.main-thread
 
 Registers:
      r13 = 0x00007ff7ba6a86e8      rax = 0x0000000000000004   rflags = 0x0000000000010247      cpu = 0x0000000000000008
@@ -248,8 +257,8 @@ Registers:
      rcx = 0x00007ff7ba6a85a8      rdi = 0x0000000000001403
 
 Frames:
-	[None] 0x0 + 0x0
-	[/usr/lib/system/libsystem_c.dylib] 0x7ff80c65c000 + 0x108a9 (nanosleep + 0xc4)
-	[/bin/sleep] 0x105857000 + 0x3dd2
-	[/usr/lib/dyld] 0x113f47000 + 0x54fe (start + 0x1ce)
+        [None] 0x0
+        [/usr/lib/system/libsystem_c.dylib] 0x7ff80c65c000 + 0x108a9 (nanosleep + 0xc4)
+        [/bin/sleep] 0x105857000 + 0x3dd2
+        [/usr/lib/dyld] 0x113f47000 + 0x54fe (start + 0x1ce)
 ```
