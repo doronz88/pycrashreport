@@ -6,9 +6,9 @@ from apple_symbols import KernelSymbols
 from rich.console import Console
 
 from pycrashreport.crash_report import (
-    StackshotProcess,
     StackshotReportBase,
     get_crash_report_from_file,
+    render_processes,
 )
 
 app = typer.Typer(add_completion=False)
@@ -37,8 +37,8 @@ def main(
         typer.Option(
             "--process",
             "-p",
-            help="Name or pid of a process of a panic or a stackshot to print the call stack of "
-            "every thread of. "
+            help="Name or pid of a process of a panic, a stackshot or a spindump report to print "
+            "the call stacks of. "
             "May be given several times.",
         ),
     ] = None,
@@ -46,7 +46,8 @@ def main(
         bool,
         typer.Option(
             "--all",
-            help="Print the threads of every process of a panic or a stackshot.",
+            help="Print the call stacks of every process of a panic, a stackshot or a spindump report, "
+            "or of every thread of a crash.",
         ),
     ] = False,
     running: Annotated[
@@ -74,26 +75,15 @@ def main(
             raise typer.BadParameter(
                 f"Reading the kernel symbols of {kernelcache} failed: {e}"
             ) from e
-    processes: list[StackshotProcess] = []
-    if process or all_processes or running:
-        if not isinstance(report, StackshotReportBase):
-            raise typer.BadParameter(
-                "--process, --all and --running apply to panic and stackshot reports only"
-            )
-        if all_processes:
-            processes = list(report.processes)
-        elif running:
-            processes = report.running_processes
-        for requested in process or []:
-            found = report.find_processes(requested)
-            if not found:
-                raise typer.BadParameter(f"The report holds no process {requested}")
-            processes += [entry for entry in found if entry not in processes]
+    try:
+        processes = render_processes(report, process or [], all_processes, running)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
     # printed as a renderable, so colors follow the terminal: none when the output is piped
     console = Console(highlight=False)
     console.print(report, soft_wrap=True)
-    if processes and isinstance(report, StackshotReportBase):
-        console.print(report.render_processes(processes), soft_wrap=True)
+    if processes is not None:
+        console.print(processes, soft_wrap=True)
 
 
 def cli() -> None:

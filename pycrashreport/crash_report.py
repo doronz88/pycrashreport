@@ -10,7 +10,18 @@ from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from io import StringIO
-from typing import IO, Any, ClassVar, Iterable, List, Mapping, Optional, Union
+from typing import (
+    Any,
+    ClassVar,
+    IO,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 from apple_symbols import (
     DeviceSupportSymbols,
@@ -190,6 +201,33 @@ class MemoryStatus:
 PanicFrame = StackshotFrame
 PanicThread = StackshotThread
 PanicProcess = StackshotProcess
+
+
+@dataclass
+class CrashThread:
+    """A thread of the process of a userland crash report."""
+
+    #: Its place among the threads of the report, which is how the report tells them apart
+    index: int
+    tid: Optional[int] = None
+    name: Optional[str] = None
+    #: Label of the dispatch queue the thread served
+    queue: Optional[str] = None
+    #: Whether this is the thread which crashed
+    crashed: bool = False
+    #: Innermost first
+    frames: List[Frame] = field(default_factory=list)
+
+    @property
+    def description(self) -> str:
+        parts = [str(self.index)]
+        if self.tid is not None:
+            parts.append(f"tid {self.tid}")
+        if self.name:
+            parts.append(self.name)
+        if self.queue:
+            parts.append(f"queue {self.queue}")
+        return ", ".join(parts)
 
 
 class BugType(Enum):
@@ -498,6 +536,10 @@ class UserModeCrashReport(CrashReportBase):
         BugType.ExcResource_385,
     )
 
+    def _parse_text_field(self, name: str) -> Optional[str]:
+        """A field of a report in the text format, ``None`` for one in the JSON format."""
+        return None if self._is_json else self._parse_field(name)
+
     def _parse_field(self, name: str) -> str:
         name += ":"
         for line in self._data.split("\n"):
@@ -526,32 +568,117 @@ class UserModeCrashReport(CrashReportBase):
         else:
             return int(self._parse_field("Triggered by Thread"))
 
+    def _json_frames(self, thread: Mapping[str, Any]) -> List[Frame]:
+        """The call stack of a thread of a report in the JSON format, innermost first."""
+        result: List[Frame] = []
+        images = self._data["usedImages"]
+        for frame in thread.get("frames") or []:
+            image = images[frame["imageIndex"]]
+            symbol = frame.get("symbol")
+            symbol_offset = frame.get("symbolLocation")
+            if symbol is None:
+                # the device names what it can; the rest is up to the host's symbols
+                named = self._symbolicate_json_frame(image, frame, innermost=not result)
+                if named is not None:
+                    symbol, symbol_offset = named
+            result.append(
+                Frame(
+                    image_name=image.get("path"),
+                    image_base=image.get("base"),
+                    symbol=symbol,
+                    image_offset=frame.get("imageOffset"),
+                    symbol_offset=symbol_offset,
+                )
+            )
+        return result
+
+    @cached_property
+    def threads(self) -> List[CrashThread]:
+        """Every thread of the process, with its call stack. Empty for a report in the text format."""
+        if not self._is_json:
+            return []
+        return [
+            CrashThread(
+                index=index,
+                tid=thread.get("id"),
+                name=thread.get("name"),
+                queue=thread.get("queue"),
+                crashed=bool(thread.get("triggered")),
+                # the stack of the faulting thread is `frames`, and is not read twice
+                frames=(
+                    self.frames
+                    if index == self.faulting_thread
+                    else self._json_frames(thread)
+                ),
+            )
+            for index, thread in enumerate(self._data.get("threads") or [])
+        ]
+
+    def _json_field(self, name: str) -> Any:
+        return self._data.get(name) if self._is_json else None
+
+    @property
+    def process_name(self) -> Optional[str]:
+        return self._json_field("procName") or self._parse_text_field("Process")
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self._json_field("pid")
+
+    @property
+    def process_path(self) -> Optional[str]:
+        return self._json_field("procPath") or self._parse_text_field("Path")
+
+    @property
+    def parent_name(self) -> Optional[str]:
+        return self._json_field("parentProc")
+
+    @property
+    def parent_pid(self) -> Optional[int]:
+        return self._json_field("parentPid")
+
+    @property
+    def signal(self) -> Optional[str]:
+        """The signal the exception was delivered as, e.g. ``SIGABRT``."""
+        return (self._json_field("exception") or {}).get("signal")
+
+    @property
+    def exception_codes(self) -> Optional[str]:
+        if self._is_json:
+            return self._data["exception"].get("codes")
+        return self._parse_text_field("Exception Codes")
+
+    @property
+    def termination(self) -> Optional[Mapping[str, Any]]:
+        """Why the process ended as the report tells it: ``namespace``, ``code``, ``indicator``,
+        and ``byProc`` with ``byPid`` for the process which ended it."""
+        return self._json_field("termination")
+
+    @property
+    def termination_reason(self) -> Optional[str]:
+        """Why the process ended and who ended it, on one line."""
+        termination = self.termination
+        if not termination:
+            return self._parse_text_field("Termination Reason")
+        parts = [
+            str(termination[key])
+            for key in ("namespace", "indicator")
+            if termination.get(key)
+        ]
+        if not termination.get("indicator") and termination.get("code") is not None:
+            parts.append(f"code {termination['code']}")
+        if termination.get("byProc"):
+            by = f"by {termination['byProc']}"
+            if termination.get("byPid") is not None:
+                by += f" (pid {termination['byPid']})"
+            parts.append(by)
+        return ", ".join(parts) or None
+
     @cached_property
     def frames(self) -> List[Frame]:
         result = []
         if self._is_json:
-            thread_index = self.faulting_thread
-            images = self._data["usedImages"]
-            for frame in self._data["threads"][thread_index]["frames"]:
-                image = images[frame["imageIndex"]]
-                symbol = frame.get("symbol")
-                symbol_offset = frame.get("symbolLocation")
-                if symbol is None:
-                    # the device names what it can; the rest is up to the host's symbols
-                    named = self._symbolicate_json_frame(
-                        image, frame, innermost=not result
-                    )
-                    if named is not None:
-                        symbol, symbol_offset = named
-                result.append(
-                    Frame(
-                        image_name=image.get("path"),
-                        image_base=image.get("base"),
-                        symbol=symbol,
-                        image_offset=frame.get("imageOffset"),
-                        symbol_offset=symbol_offset,
-                    )
-                )
+            return self._json_frames(self._data["threads"][self.faulting_thread])
         else:
             in_frames = False
             for line in self._data.split("\n"):
@@ -685,8 +812,35 @@ class UserModeCrashReport(CrashReportBase):
         return result
 
     def _render_details(self, text: Text) -> None:
+        if self.process_name:
+            text.append("Process: ", style=STYLE_LABEL)
+            text.append(self.process_name, style=STYLE_IMAGE)
+            if self.pid is not None:
+                text.append(f" (pid {self.pid})")
+            if self.process_path:
+                text.append(f" {self.process_path}", style=STYLE_IDENTIFIER)
+            text.append("\n")
+        if self.parent_name:
+            text.append("Parent: ", style=STYLE_LABEL)
+            text.append(f"{self.parent_name} (pid {self.parent_pid})\n")
+        if self.product_type:
+            text.append("Device: ", style=STYLE_LABEL)
+            text.append(f"{self.product_type} ({self.build_version})\n")
         text.append("Exception: ", style=STYLE_LABEL)
-        text.append(f"{self.exception_type}\n", style=STYLE_FAILURE)
+        text.append(str(self.exception_type), style=STYLE_FAILURE)
+        if self.signal:
+            text.append(f" ({self.signal})", style=STYLE_FAILURE)
+        text.append("\n")
+        if self.exception_codes:
+            text.append("Exception Codes: ", style=STYLE_LABEL)
+            text.append(f"{self.exception_codes}\n", style=STYLE_DETAIL)
+        if self.termination_reason:
+            text.append("Termination: ", style=STYLE_LABEL)
+            text.append(f"{self.termination_reason}\n", style=STYLE_DETAIL)
+        crashed = next((thread for thread in self.threads if thread.crashed), None)
+        if crashed is not None:
+            text.append("Crashed thread: ", style=STYLE_LABEL)
+            text.append(f"{crashed.description}\n")
 
         if self.exception_subtype:
             text.append("Exception Subtype: ", style=STYLE_LABEL)
@@ -709,6 +863,19 @@ class UserModeCrashReport(CrashReportBase):
         text.append("Frames:\n", style=STYLE_LABEL)
         for frame in self.frames:
             self._render_frame(text, frame)
+
+    def render_threads(self) -> Text:
+        """Render the call stack of every thread of the process."""
+        text = Text()
+        for thread in self.threads:
+            text.append("Thread: ", style=STYLE_LABEL)
+            text.append(thread.description)
+            if thread.crashed:
+                text.append(" (crashed)", style=STYLE_FAILURE)
+            text.append("\n")
+            for frame in thread.frames:
+                self._render_frame(text, frame)
+        return text
 
     @staticmethod
     def _render_register(text: Text, register: Register) -> None:
@@ -1391,6 +1558,409 @@ class KernelModeCrashReport(StackshotReportBase):
                 f"{self.product_type} ({self.build_version}).\n",
                 style=STYLE_IDENTIFIER,
             )
+
+
+@dataclass
+class SpindumpImage:
+    """A binary image a process of a spindump report had loaded."""
+
+    name: str
+    uuid: str
+    start: int
+    #: Unknown for some images, the executable of the process among them
+    end: Optional[int] = None
+    path: Optional[str] = None
+
+
+@dataclass
+class SpindumpFrame:
+    """A node of a call tree of a spindump report: a frame, and the frames it called."""
+
+    #: How many samples went through this frame
+    count: int
+    #: ``None`` for a line which is not a frame, such as ``<Kernel mode>``
+    address: Optional[int] = None
+    image: Optional[str] = None
+    image_offset: Optional[int] = None
+    symbol: Optional[str] = None
+    symbol_offset: Optional[int] = None
+    #: The text of a line which is not a frame
+    note: Optional[str] = None
+    children: List["SpindumpFrame"] = field(default_factory=list)
+
+    def walk(self, depth: int = 0) -> Iterator[Tuple[int, "SpindumpFrame"]]:
+        """Go over this frame and the ones below it, each with its depth."""
+        yield depth, self
+        for child in self.children:
+            yield from child.walk(depth + 1)
+
+
+@dataclass
+class SpindumpProcess:
+    """A process of a spindump report, with the call tree its samples make."""
+
+    name: str
+    pid: Optional[int] = None
+    #: What the report tells of the process, e.g. ``Footprint`` or ``Num samples``
+    fields: Mapping[str, str] = field(default_factory=dict)
+    #: The outermost frames
+    frames: List[SpindumpFrame] = field(default_factory=list)
+    images: List[SpindumpImage] = field(default_factory=list)
+
+    @property
+    def uuid(self) -> Optional[str]:
+        return self.fields.get("UUID")
+
+    @property
+    def path(self) -> Optional[str]:
+        return self.fields.get("Path")
+
+    def image_at(self, address: int) -> Optional[SpindumpImage]:
+        """The image holding ``address``."""
+        found = None
+        for image in self.images:
+            if image.start <= address and (found is None or image.start > found.start):
+                found = image
+        if found is not None and found.end is not None and address > found.end:
+            return None
+        return found
+
+    def walk(self) -> Iterator[Tuple[int, SpindumpFrame]]:
+        """Go over every frame of the call tree, each with its depth."""
+        for frame in self.frames:
+            yield from frame.walk()
+
+
+class SpindumpCrashReport(CrashReportBase):
+    """A report of what processes were doing over a while, as spindump writes for a resource limit.
+
+    A process went over its limit of disk writes, CPU or wakeups, and the samples taken of it
+    meanwhile make a call tree for each process involved.
+    """
+
+    BUG_TYPES = (
+        BugType.SymptomsIO,
+        BugType.SymptomsCPUUsage,
+        BugType.SymptomsCPUUsageFatal,
+        BugType.SymptomsCPUWakes,
+    )
+
+    _FIELD = re.compile(r"^([^:\s][^:]*):\s*(.*)$")
+    _STACK_LINE = re.compile(r"^( +)(\d+)\s+(.+)$")
+    _FRAME = re.compile(
+        r"^(?:\?\?\?|(?P<symbol>.+?)(?: \+ (?P<symbol_offset>\d+))?) "
+        r"\((?P<image>.+) \+ (?P<image_offset>\d+)\) \[(?P<address>0x[0-9a-fA-F]+)\]$"
+    )
+    _IMAGE = re.compile(
+        r"^\s+(0x[0-9a-fA-F]+) -\s+(0x[0-9a-fA-F]+|\?\?\?)\s+(.+?)\s+<([0-9A-Fa-f-]{36})>(?:\s+(.*))?$"
+    )
+    _PROCESS = re.compile(
+        r"^Powerstats for:\s+(.+?)(?: \[(\d+)\])?(?: \[unique pid \d+\])?$"
+    )
+    _HEAVIEST_STACK = "Heaviest stack for the target process:"
+
+    def _text(self) -> str:
+        return self._data if isinstance(self._data, str) else ""
+
+    @cached_property
+    def _sections(self) -> List[List[str]]:
+        """The lines of the report, split where a process starts. The first describe the event."""
+        sections: List[List[str]] = [[]]
+        for line in self._text().splitlines():
+            if self._PROCESS.match(line):
+                sections.append([])
+            sections[-1].append(line)
+        return sections
+
+    @classmethod
+    def _parse_fields(cls, lines: Iterable[str]) -> dict:
+        fields: dict = {}
+        for line in lines:
+            match = cls._FIELD.match(line)
+            # the first one wins: a process repeats some of the event's under its own
+            if match and match.group(1) not in fields:
+                fields[match.group(1)] = match.group(2)
+        return fields
+
+    @classmethod
+    def _parse_frame(cls, count: int, text: str) -> SpindumpFrame:
+        match = cls._FRAME.match(text)
+        if match is None:
+            return SpindumpFrame(count=count, note=text)
+        symbol_offset = match.group("symbol_offset")
+        return SpindumpFrame(
+            count=count,
+            address=int(match.group("address"), 16),
+            image=match.group("image"),
+            image_offset=int(match.group("image_offset")),
+            symbol=match.group("symbol"),
+            symbol_offset=(
+                int(symbol_offset or 0) if match.group("symbol") is not None else None
+            ),
+        )
+
+    @classmethod
+    def _parse_tree(cls, lines: Iterable[str]) -> List[SpindumpFrame]:
+        """Read a call tree, where a frame is indented below the one which called it."""
+        roots: List[SpindumpFrame] = []
+        path: List[Tuple[int, SpindumpFrame]] = []
+        for line in lines:
+            match = cls._STACK_LINE.match(line)
+            if match is None:
+                continue
+            indent = len(match.group(1))
+            frame = cls._parse_frame(int(match.group(2)), match.group(3))
+            while path and path[-1][0] >= indent:
+                path.pop()
+            (path[-1][1].children if path else roots).append(frame)
+            path.append((indent, frame))
+        return roots
+
+    @cached_property
+    def fields(self) -> Mapping[str, str]:
+        """What the report tells of the event, e.g. ``Event``, ``Command`` or ``Duration``."""
+        lines = self._sections[0]
+        if self._HEAVIEST_STACK in lines:
+            lines = lines[: lines.index(self._HEAVIEST_STACK)]
+        return self._parse_fields(lines)
+
+    @property
+    def event(self) -> Optional[str]:
+        """What the report is about, e.g. ``disk writes`` or ``cpu usage``."""
+        return self.fields.get("Event")
+
+    @property
+    def command(self) -> Optional[str]:
+        """Name of the process the report is about."""
+        return self.fields.get("Command")
+
+    @property
+    def pid(self) -> Optional[int]:
+        pid = self.fields.get("PID", "")
+        return int(pid) if pid.isdigit() else None
+
+    @property
+    def product_type(self) -> Optional[str]:
+        return self.fields.get("Hardware model")
+
+    @property
+    def build_version(self) -> Optional[str]:
+        # "iPhone OS 27.2.1 (Build 24B91034)"
+        match = re.search(
+            r"\((?:Build )?([^)]+)\)\s*$", self.fields.get("OS Version", "")
+        )
+        return match.group(1) if match else None
+
+    def _name_frames(
+        self, process: SpindumpProcess, frames: Iterable[SpindumpFrame]
+    ) -> None:
+        """Name the frames the report left unnamed, using the symbols of the images of the process."""
+        symbols = self.device_support_symbols
+        if symbols is None:
+            return
+        for frame in frames:
+            if frame.address is None or frame.symbol is not None:
+                continue
+            image = process.image_at(frame.address)
+            if image is None:
+                continue
+            symbol_image = symbols.image_by_uuid(image.uuid)
+            if symbol_image is None:
+                continue
+            # only where a sample ended is the address not one to return to
+            innermost = not any(child.address is not None for child in frame.children)
+            symbol = self._symbolicate_user_frame(
+                symbol_image, frame.address - image.start, innermost
+            )
+            if symbol is not None:
+                frame.symbol, frame.symbol_offset = symbol
+
+    @cached_property
+    def processes(self) -> List[SpindumpProcess]:
+        """Every process the report holds, with the call tree of its samples."""
+        result = []
+        for lines in self._sections[1:]:
+            match = self._PROCESS.match(lines[0])
+            stack_start = next(
+                (i for i, line in enumerate(lines) if self._STACK_LINE.match(line)),
+                len(lines),
+            )
+            images_start = next(
+                (i for i, line in enumerate(lines) if line.strip() == "Binary Images:"),
+                len(lines),
+            )
+            process = SpindumpProcess(
+                name=match.group(1),
+                pid=int(match.group(2)) if match.group(2) else None,
+                fields=self._parse_fields(lines[1:stack_start]),
+                frames=self._parse_tree(lines[stack_start:images_start]),
+            )
+            for line in lines[images_start:]:
+                image = self._IMAGE.match(line)
+                if image:
+                    process.images.append(
+                        SpindumpImage(
+                            # an identifier and a version may come where the name does
+                            name=posixpath.basename(image.group(5) or "")
+                            or image.group(3),
+                            uuid=image.group(4).lower(),
+                            start=int(image.group(1), 16),
+                            end=None
+                            if image.group(2) == "???"
+                            else int(image.group(2), 16),
+                            path=image.group(5) or None,
+                        )
+                    )
+            self._name_frames(process, (frame for _depth, frame in process.walk()))
+            result.append(process)
+        return result
+
+    @cached_property
+    def target_process(self) -> Optional[SpindumpProcess]:
+        """The process the report is about."""
+        return next(
+            (process for process in self.processes if process.pid == self.pid),
+            self.processes[0] if self.processes else None,
+        )
+
+    @cached_property
+    def heaviest_stack(self) -> List[SpindumpFrame]:
+        """The call stack most samples of the target process went through, outermost first."""
+        lines = self._sections[0]
+        if self._HEAVIEST_STACK not in lines:
+            return []
+        frames = []
+        for line in lines[lines.index(self._HEAVIEST_STACK) + 1 :]:
+            match = self._STACK_LINE.match(line)
+            if match is None:
+                break
+            frames.append(self._parse_frame(int(match.group(2)), match.group(3)))
+        # each one called the next, which is what tells a frame from where a sample ended
+        for caller, callee in zip(frames, frames[1:]):
+            caller.children = [callee]
+        if self.target_process is not None:
+            self._name_frames(self.target_process, frames)
+        for frame in frames:
+            frame.children = []
+        return frames
+
+    def get_process(self, pid: int) -> Optional[SpindumpProcess]:
+        return next((found for found in self.processes if found.pid == pid), None)
+
+    def find_processes(self, process: str) -> List[SpindumpProcess]:
+        """Get the processes of the report with the given name, or the one with the given pid."""
+        if process.isdigit():
+            return [found for found in self.processes if found.pid == int(process)]
+        return [found for found in self.processes if found.name == process]
+
+    def _render_details(self, text: Text) -> None:
+        if self.event:
+            text.append("Event: ", style=STYLE_LABEL)
+            text.append(f"{self.event}\n", style=STYLE_FAILURE)
+        if self.command:
+            text.append("Process: ", style=STYLE_LABEL)
+            text.append(self.command, style=STYLE_IMAGE)
+            text.append(f" (pid {self.pid})\n" if self.pid is not None else "\n")
+        # what went over which limit: the lines the report gives next to its event
+        names = list(self.fields)
+        if "Event" in names:
+            for name in names[names.index("Event") + 1 :]:
+                if name == "Hardware model":
+                    break
+                text.append(f"{name}: ", style=STYLE_LABEL)
+                text.append(f"{self.fields[name]}\n", style=STYLE_DETAIL)
+        if self.product_type:
+            text.append("Device: ", style=STYLE_LABEL)
+            text.append(f"{self.product_type}, {self.fields.get('OS Version')}\n")
+        if self.heaviest_stack:
+            text.append("Heaviest stack:\n", style=STYLE_LABEL)
+            for frame in self.heaviest_stack:
+                self._render_frame(text, frame, indent="\t")
+            if self.device_support_symbols is None and any(
+                frame.symbol is None for frame in self.heaviest_stack
+            ):
+                text.append(
+                    f"\tFrames are named given the Xcode DeviceSupport of "
+                    f"{self.product_type} ({self.build_version}).\n",
+                    style=STYLE_IDENTIFIER,
+                )
+
+    def render_processes(self, processes: Iterable[SpindumpProcess]) -> Text:
+        """Render the call tree of the given processes, each frame after its count of samples."""
+        text = Text()
+        for process in processes:
+            text.append("Process: ", style=STYLE_LABEL)
+            text.append(process.name or "?", style=STYLE_IMAGE)
+            details = [] if process.pid is None else [f"pid {process.pid}"]
+            if process.fields.get("Num samples"):
+                details.append(f"samples: {process.fields['Num samples']}")
+            text.append(f" ({', '.join(details)})\n" if details else "\n")
+            for depth, frame in process.walk():
+                self._render_frame(text, frame, indent="\t" + "  " * depth)
+        return text
+
+    @staticmethod
+    def _render_frame(text: Text, frame: SpindumpFrame, indent: str) -> None:
+        text.append(f"{indent}{frame.count:<3} ")
+        if frame.address is None:
+            text.append(f"{frame.note}\n", style=STYLE_IDENTIFIER)
+            return
+        text.append("[")
+        text.append(frame.image or "?", style=STYLE_IMAGE)
+        text.append("] ")
+        text.append(f"0x{frame.address:x}", style=STYLE_ADDRESS)
+        if frame.symbol is not None:
+            text.append(" (")
+            text.append(frame.symbol, style=STYLE_SYMBOL)
+            text.append(f" + 0x{frame.symbol_offset:x})")
+        elif frame.image_offset is not None:
+            text.append(" (+ ")
+            text.append(f"0x{frame.image_offset:x}", style=STYLE_ADDRESS)
+            text.append(")")
+        text.append("\n")
+
+
+def render_processes(
+    report: CrashReportBase,
+    processes: Iterable[str] = (),
+    all_processes: bool = False,
+    running: bool = False,
+) -> Optional[Text]:
+    """Render the processes asked of a report: what ``--process``, ``--all`` and ``--running`` print.
+
+    :param processes: Name or pid of the processes to render.
+    :param all_processes: Render every process of the report, or every thread of a userland crash.
+    :param running: Render the threads which were on a CPU, of a panic or a stackshot.
+    :returns: ``None`` when no process was asked for.
+    :raises ValueError: for processes asked of a report which holds none, or not the ones asked for.
+    """
+    requested = list(processes)
+    if not (requested or all_processes or running):
+        return None
+    if isinstance(report, UserModeCrashReport):
+        # a single process: all there is to list are its threads
+        if requested or running:
+            raise ValueError(
+                "--process and --running apply to panic, stackshot and spindump reports only"
+            )
+        return report.render_threads()
+    if not isinstance(report, (StackshotReportBase, SpindumpCrashReport)):
+        raise ValueError(
+            "--process, --all and --running apply to crash, panic, stackshot and spindump reports only"
+        )
+    if running and not isinstance(report, StackshotReportBase):
+        raise ValueError("--running applies to panic and stackshot reports only")
+    selected: list = []
+    if all_processes:
+        selected = list(report.processes)
+    elif running:
+        selected = list(report.running_processes)
+    for name in requested:
+        found = report.find_processes(name)
+        if not found:
+            raise ValueError(f"The report holds no process {name}")
+        selected += [entry for entry in found if entry not in selected]
+    return report.render_processes(selected)
 
 
 def get_crash_report_from_file(crash_report_file: IO) -> CrashReportBase:
