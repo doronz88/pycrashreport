@@ -72,6 +72,10 @@ From Python: `report.process_name`, `.pid`, `.process_path`, `.parent_name`, `.p
 line above) and `.threads`, each with its `tid`, `name`, `queue`, `crashed` and `frames`. A report
 in the older text format has no `threads`.
 
+A thread the report gives no call stack of has nothing to unwind: an idle worker of a dispatch
+queue, for one, is parked in the kernel. It gets where it would resume as its only frame
+(`start_wqthread + 0x0`).
+
 ## Exit reasons
 
 A panic over a process which may not exit only gives the numbers of its exit reason. They are

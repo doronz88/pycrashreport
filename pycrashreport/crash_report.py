@@ -634,7 +634,7 @@ class UserModeCrashReport(CrashReportBase):
         """The call stack of a thread of a report in the JSON format, innermost first."""
         result: List[Frame] = []
         images = self._data["usedImages"]
-        for frame in thread.get("frames") or []:
+        for frame in thread.get("frames") or self._json_resume_frame(thread):
             image = images[frame["imageIndex"]]
             symbol = frame.get("symbol")
             symbol_offset = frame.get("symbolLocation")
@@ -653,6 +653,22 @@ class UserModeCrashReport(CrashReportBase):
                 )
             )
         return result
+
+    def _json_resume_frame(self, thread: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+        """Where a thread the report gives no call stack of would resume, as its only frame.
+
+        Such a thread has no stack to unwind: an idle worker of a dispatch queue, for one, is
+        parked in the kernel and resumes at the start of ``start_wqthread``.
+        """
+        state = thread.get("threadState") or {}
+        pc = (state.get("pc") or state.get("rip") or {}).get("value")
+        if not pc:
+            return []
+        for index, image in enumerate(self._data["usedImages"]):
+            base = image.get("base")
+            if base is not None and base <= pc < base + (image.get("size") or 0):
+                return [{"imageIndex": index, "imageOffset": pc - base}]
+        return []
 
     @cached_property
     def threads(self) -> List[CrashThread]:

@@ -905,3 +905,56 @@ def test_cli_lists_the_call_tree_of_a_spindump_process(tmp_path: Path):
     result = RUNNER.invoke(app, [str(report_file), "--running"])
     assert result.exit_code == 2
     assert "--running applies to panic and stackshot" in result.output
+
+
+def test_user_mode_thread_without_a_call_stack_tells_where_it_resumes(
+    symbols: DeviceSupportSymbols,
+):
+    payload = {
+        "modelCode": "iPhone19,4",
+        "osVersion": {"build": "24B91034"},
+        "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+        "faultingThread": 0,
+        "usedImages": [
+            {"base": 0x104000000, "size": 0x4000, "path": "/usr/libexec/food"},
+            {
+                "base": LIBFOO_VMADDR + SHARED_CACHE_SLIDE,
+                "size": 0x1000,
+                "uuid": LIBFOO_UUID,
+                "path": "/usr/lib/libfoo.dylib",
+            },
+        ],
+        "threads": [
+            {
+                "id": 500,
+                "triggered": True,
+                "threadState": {"pc": {"value": 0x104000040}},
+                "frames": [{"imageIndex": 0, "imageOffset": 0x40}],
+            },
+            # an idle worker: parked, to resume at the start of a function
+            {
+                "id": 501,
+                "threadState": {
+                    "pc": {"value": LIBFOO_VMADDR + SHARED_CACHE_SLIDE + 0x200}
+                },
+                "frames": [],
+            },
+            # nowhere the report knows of
+            {"id": 502, "threadState": {"pc": {"value": 0x7000}}, "frames": []},
+            {"id": 503, "threadState": {}, "frames": []},
+        ],
+    }
+    report = get_crash_report_from_buf(
+        json.dumps({"bug_type": "309", "timestamp": "2026-11-16 17:35:06.00 +0200"})
+        + "\n"
+        + json.dumps(payload)
+    )
+    report.device_support_symbols = symbols
+
+    crashed, parked, unknown, stateless = report.threads
+    assert len(crashed.frames) == 1
+    (frame,) = parked.frames
+    assert (frame.image_name, frame.image_offset) == ("/usr/lib/libfoo.dylib", 0x200)
+    assert (frame.symbol, frame.symbol_offset) == ("bar", 0)
+    assert unknown.frames == [] and stateless.frames == []
+    assert "(bar + 0x0)" in report.render_threads().plain
