@@ -31,6 +31,8 @@ from apple_symbols import (
 )
 from rich.console import Console
 from rich.text import Text
+from symbolicator_server.ips_report import Frame as ServerFrame
+from symbolicator_server.ips_report import IpsReport
 
 from pycrashreport.exit_reason import ExitReason
 
@@ -956,6 +958,10 @@ class StackshotReportBase(ProcessesReport):
     #: before reading any frames.
     kernel_symbols: Optional[KernelSymbols] = None
 
+    #: The report as a symbolicator server symbolicated it, naming every frame in place of the
+    #: kernel and DeviceSupport symbols. Assign it before reading any frames.
+    server_report: Optional[IpsReport] = None
+
     def _report_field(self, name: str) -> Any:
         if self._is_json and isinstance(self._data, dict):
             return self._data.get(name)
@@ -1085,11 +1091,58 @@ class StackshotReportBase(ProcessesReport):
             frame.symbol, frame.symbol_offset = symbol
         return frame
 
+    @cached_property
+    def _server_frames(self) -> dict:
+        """The frames the server named, by their image index and offset, and whether they hold a
+        return address: all but the first of a stack, which the server looks up one byte back."""
+        frames = {}
+        for process in self.server_report.processes:
+            for thread in process.threads:
+                for stack in (thread.kernel_frames, thread.user_frames):
+                    for position, frame in enumerate(stack):
+                        frames[
+                            (frame.image_index, frame.image_offset, position > 0)
+                        ] = frame
+        return frames
+
+    def _server_frame(
+        self,
+        uuid: str,
+        base: int,
+        kind: str,
+        offset: int,
+        kernel: bool,
+        server_frame: Optional[ServerFrame],
+    ) -> StackshotFrame:
+        if kind == IMAGE_KIND_UNSLID_KERNELCACHE:
+            frame = StackshotFrame(
+                address=base + offset, kernel=True, image=KERNELCACHE_IMAGE_NAME
+            )
+        elif kind in IMAGE_KINDS_KERNEL:
+            frame = StackshotFrame(
+                address=base + offset,
+                kernel=True,
+                image=self._reported_kernel_images.get(uuid.lower(), uuid),
+                image_offset=offset,
+            )
+        else:
+            frame = StackshotFrame(
+                address=base + offset, kernel=kernel, image=uuid, image_offset=offset
+            )
+        if server_frame is None:
+            return frame
+        if server_frame.image is not None:
+            frame.image = posixpath.basename(server_frame.image)
+        if server_frame.symbol is not None:
+            frame.symbol = server_frame.symbol
+            frame.symbol_offset = server_frame.offset
+        return frame
+
     def _frames(self, thread: Mapping[str, Any]) -> List[StackshotFrame]:
         images = self._report_field("binaryImages") or []
         frames: List[StackshotFrame] = []
         for key in ("kernelFrames", "userFrames"):
-            for index, offset in thread.get(key) or []:
+            for position, (index, offset) in enumerate(thread.get(key) or []):
                 if not 0 <= index < len(images):
                     continue
                 uuid, base, kind = images[index][:3]
@@ -1098,6 +1151,20 @@ class StackshotReportBase(ProcessesReport):
                         frames.append(
                             StackshotFrame(address=offset, kernel=key == "kernelFrames")
                         )
+                elif self.server_report is not None:
+                    server_frame = self._server_frames.get(
+                        (index, offset, position > 0)
+                    )
+                    frames.append(
+                        self._server_frame(
+                            uuid,
+                            base,
+                            kind,
+                            offset,
+                            key == "kernelFrames",
+                            server_frame,
+                        )
+                    )
                 elif kind in IMAGE_KINDS_KERNEL:
                     frames.append(self._kernel_frame(uuid, base, offset, not frames))
                 elif kind == IMAGE_KIND_UNSLID_KERNELCACHE:
@@ -1556,6 +1623,14 @@ class KernelModeCrashReport(StackshotReportBase):
     def _render_missing_symbols(self, text: Text) -> None:
         """Say which symbols would name the frames left unnamed."""
         frames = self.panicked_thread_frames
+        if self.server_report is not None:
+            if self.server_report.missing_images:
+                text.append(
+                    f"\tThe symbolicator server holds no symbols for "
+                    f"{len(self.server_report.missing_images)} images of the report.\n",
+                    style=STYLE_IDENTIFIER,
+                )
+            return
         if any(frame.kernel for frame in frames):
             if self.kernel_symbols is None:
                 text.append(

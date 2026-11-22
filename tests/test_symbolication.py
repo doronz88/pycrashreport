@@ -1,9 +1,12 @@
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 from apple_symbols import DeviceSupportSymbols, KernelSymbols
 from apple_symbols.testing import build_fileset, build_macho
+from symbolicator_server.client import SymbolicatorClient
+from symbolicator_server.ips_report import IpsReport
 from typer.testing import CliRunner
 
 from pycrashreport import crash_report
@@ -958,3 +961,20 @@ def test_user_mode_thread_without_a_call_stack_tells_where_it_resumes(
     assert (frame.symbol, frame.symbol_offset) == ("bar", 0)
     assert unknown.frames == [] and stateless.frames == []
     assert "(bar + 0x0)" in report.render_threads().plain
+
+
+class FakeSymbolicatorClient:
+    def symbolicate(self, report_path: Path) -> dict:
+        report = IpsReport.parse(report_path.read_text())
+        report.processes[1].threads[0].kernel_frames[0].symbol = "_panic"
+        report.processes[1].threads[0].kernel_frames[0].offset = 0x10
+        return dataclasses.asdict(report)
+
+
+def test_cli_names_frames_on_a_symbolicator_server(panic_file: Path, monkeypatch):
+    monkeypatch.setattr(
+        SymbolicatorClient, "connect", lambda server: FakeSymbolicatorClient()
+    )
+    result = RUNNER.invoke(app, [str(panic_file), "--server", "http://localhost:3993"])
+    assert result.exit_code == 0, result.output
+    assert "(_panic + 0x10)" in result.output
