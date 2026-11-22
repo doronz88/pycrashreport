@@ -1,3 +1,5 @@
+import bisect
+import dataclasses
 import json
 import os
 import posixpath
@@ -29,7 +31,10 @@ KernelExtension = namedtuple("KernelExtension", "name version uuid start end")
 IMAGE_KIND_ABSOLUTE = "A"
 IMAGE_KIND_SHARED_CACHE = "S"
 IMAGE_KINDS_KERNEL = frozenset({"K", "T"})
+#: The whole kernelcache as it is before sliding, which a stackshot locates its kernel frames with
+IMAGE_KIND_UNSLID_KERNELCACHE = "U"
 KERNEL_IMAGE_NAME = "kernel"
+KERNELCACHE_IMAGE_NAME = "kernelcache"
 
 
 STYLE_INCIDENT = "bold cyan"
@@ -89,8 +94,8 @@ class PanickedThread:
 
 
 @dataclass
-class PanicFrame:
-    """One address of a call stack of a panic report, innermost first."""
+class StackshotFrame:
+    """One address of a call stack of a panic or a stackshot, innermost first."""
 
     address: int
     kernel: bool = False
@@ -102,18 +107,89 @@ class PanicFrame:
 
 
 @dataclass
-class PanicThread:
+class StackshotThread:
+    """A thread of a process of a panic or a stackshot."""
+
     tid: int
     name: Optional[str] = None
     #: The kernel stack of a thread caught in the kernel comes on top of its user stack
-    frames: List[PanicFrame] = field(default_factory=list)
+    frames: List[StackshotFrame] = field(default_factory=list)
+    #: Scheduling state, e.g. ``["TH_WAIT", "TH_UNINT"]``
+    state: List[str] = field(default_factory=list)
+    #: What a waiting thread waits on, when the report tells
+    wait_info: Optional[str] = None
+    #: Label of the dispatch queue the thread serves
+    queue: Optional[str] = None
+    base_priority: Optional[int] = None
+    sched_priority: Optional[int] = None
+    #: Time spent running, in microseconds
+    user_usec: Optional[int] = None
+    system_usec: Optional[int] = None
+    #: Effective quality of service, e.g. ``QOS_CLASS_USER_INITIATED``
+    qos: Optional[str] = None
+    #: E.g. ``["kUser64_p", "kThreadIdleWorker"]``
+    flags: List[str] = field(default_factory=list)
+    #: The thread as the report gives it, for whatever has no field here
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def running(self) -> bool:
+        return "TH_RUN" in self.state
+
+    @property
+    def kernel_frames(self) -> List[StackshotFrame]:
+        return [frame for frame in self.frames if frame.kernel]
+
+    @property
+    def user_frames(self) -> List[StackshotFrame]:
+        return [frame for frame in self.frames if not frame.kernel]
 
 
 @dataclass
-class PanicProcess:
+class StackshotProcess:
+    """A process of a panic or a stackshot."""
+
     pid: int
     name: str
-    threads: List[PanicThread] = field(default_factory=list)
+    threads: List[StackshotThread] = field(default_factory=list)
+    parent_pid: Optional[int] = None
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    #: E.g. ``["foreground", "isDirtyTracked", "sharedRegionSystem"]``
+    flags: List[str] = field(default_factory=list)
+    frontmost: bool = False
+    resident_memory_bytes: Optional[int] = None
+    #: Time its threads spent running, in seconds
+    user_time: Optional[float] = None
+    system_time: Optional[float] = None
+    #: Seconds since it started
+    uptime: Optional[float] = None
+    #: The process as the report gives it, for whatever has no field here
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    def get_thread(self, tid: int) -> Optional[StackshotThread]:
+        return next((thread for thread in self.threads if thread.tid == tid), None)
+
+
+@dataclass
+class MemoryStatus:
+    """Memory of the system when a panic or a stackshot was taken."""
+
+    page_size: Optional[int] = None
+    #: Count of pages of each kind, e.g. ``active``, ``wired``, ``free``
+    pages: Mapping[str, int] = field(default_factory=dict)
+    memory_pressure: Optional[bool] = None
+    compressor_size: Optional[int] = None
+    compressions: Optional[int] = None
+    decompressions: Optional[int] = None
+    #: As the report gives it, for whatever has no field here
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+
+#: Names from when only panics had processes
+PanicFrame = StackshotFrame
+PanicThread = StackshotThread
+PanicProcess = StackshotProcess
 
 
 class BugType(Enum):
@@ -671,18 +747,8 @@ class UserModeCrashReport(CrashReportBase):
         text.append("\n")
 
 
-class KernelModeCrashReport(CrashReportBase):
-    BUG_TYPES = (BugType.ForceReset, BugType.Panic_210)
-
-    def _parse(self):
-        super()._parse()
-        self._panic_text = ""
-        if self._is_json and isinstance(self._data, dict):
-            self._panic_text = (
-                self._data.get("string") or self._data.get("panicString") or ""
-            )
-        elif isinstance(self._data, str):
-            self._panic_text = self._data
+class StackshotReportBase(CrashReportBase):
+    """A report carrying a stackshot: the processes of the system and the stacks of their threads."""
 
     #: Symbols naming the kernel frames, which need the kernelcache the device ran. Assign them
     #: before reading any frames.
@@ -703,20 +769,15 @@ class KernelModeCrashReport(CrashReportBase):
         match = re.search(r"\(([^)]+)\)\s*$", self._report_field("build") or "")
         return match.group(1) if match else None
 
-    @cached_property
+    @property
     def _reported_kernel_images(self) -> dict:
-        """Names the panic text itself gives to kernel images, by their lowercase UUID."""
-        names = {}
-        if self.kernel_uuid:
-            names[self.kernel_uuid.lower()] = KERNEL_IMAGE_NAME
-        for extension in self.kernel_extensions_in_backtrace:
-            names[extension.uuid.lower()] = extension.name
-        return names
+        """Names the report itself gives to kernel images, by their lowercase UUID."""
+        return {}
 
     def _kernel_frame(
         self, uuid: str, base: int, offset: int, innermost: bool
-    ) -> PanicFrame:
-        frame = PanicFrame(
+    ) -> StackshotFrame:
+        frame = StackshotFrame(
             address=base + offset,
             kernel=True,
             image=self._reported_kernel_images.get(uuid.lower(), uuid),
@@ -736,14 +797,69 @@ class KernelModeCrashReport(CrashReportBase):
             frame.symbol_offset = symbol[1] + delta
         return frame
 
+    @cached_property
+    def _kernel_images_by_address(self) -> tuple:
+        """The images of the kernel symbols in the order of their code, after where each starts."""
+        images = sorted(self.kernel_symbols.images, key=lambda image: image.text_exec)
+        return [image.text_exec for image in images], images
+
+    def _kernelcache_frame(self, address: int, innermost: bool) -> StackshotFrame:
+        """A frame located by its unslid address in the kernelcache, not by one of its images."""
+        frame = StackshotFrame(
+            address=address, kernel=True, image=KERNELCACHE_IMAGE_NAME
+        )
+        if self.kernel_symbols is None:
+            return frame
+        # the code of the images of a kernelcache is laid out back to back, so an address
+        # belongs to the image whose code starts closest below it
+        starts, images = self._kernel_images_by_address
+        index = bisect.bisect_right(starts, address)
+        if index:
+            frame.image = images[index - 1].name
+            frame.image_offset = address - images[index - 1].text_exec
+        delta = 0 if innermost else 1
+        symbol = self.kernel_symbols.symbolicate(address - delta)
+        if symbol is not None:
+            frame.symbol = symbol[0]
+            frame.symbol_offset = symbol[1] + delta
+        return frame
+
+    @cached_property
+    def _system_shared_caches(self) -> Optional[frozenset]:
+        """UUIDs of the shared cache the system runs on, ``None`` when the report does not tell.
+
+        DriverKit processes run on a shared cache of their own, which DeviceSupport does not
+        hold. A process says which kind it uses, so the caches of the ones on the system's
+        are the system's.
+        """
+        images = self._report_field("binaryImages") or []
+        told = False
+        caches = set()
+        for process in (self._report_field("processByPid") or {}).values():
+            flags = process.get("flags") or []
+            told = told or any(flag.startswith("sharedRegion") for flag in flags)
+            if "sharedRegionSystem" not in flags:
+                continue
+            for thread in (process.get("threadById") or {}).values():
+                for index, _offset in thread.get("userFrames") or []:
+                    if (
+                        0 <= index < len(images)
+                        and images[index][2] == IMAGE_KIND_SHARED_CACHE
+                    ):
+                        caches.add(images[index][0].lower())
+        return frozenset(caches) if told else None
+
     def _user_frame(
         self, uuid: str, base: int, kind: str, offset: int, innermost: bool
-    ) -> PanicFrame:
-        frame = PanicFrame(address=base + offset, image=uuid, image_offset=offset)
+    ) -> StackshotFrame:
+        frame = StackshotFrame(address=base + offset, image=uuid, image_offset=offset)
         symbols = self.device_support_symbols
         if symbols is None:
             return frame
         if kind == IMAGE_KIND_SHARED_CACHE:
+            system_caches = self._system_shared_caches
+            if system_caches is not None and uuid.lower() not in system_caches:
+                return frame
             # located by its offset in the whole shared cache, whose UUID this is
             cache_base = symbols.shared_cache_base
             image = (
@@ -764,9 +880,9 @@ class KernelModeCrashReport(CrashReportBase):
             frame.symbol, frame.symbol_offset = symbol
         return frame
 
-    def _frames(self, thread: Mapping[str, Any]) -> List[PanicFrame]:
+    def _frames(self, thread: Mapping[str, Any]) -> List[StackshotFrame]:
         images = self._report_field("binaryImages") or []
-        frames: List[PanicFrame] = []
+        frames: List[StackshotFrame] = []
         for key in ("kernelFrames", "userFrames"):
             for index, offset in thread.get(key) or []:
                 if not 0 <= index < len(images):
@@ -775,37 +891,262 @@ class KernelModeCrashReport(CrashReportBase):
                 if kind == IMAGE_KIND_ABSOLUTE:
                     if offset:
                         frames.append(
-                            PanicFrame(address=offset, kernel=key == "kernelFrames")
+                            StackshotFrame(address=offset, kernel=key == "kernelFrames")
                         )
                 elif kind in IMAGE_KINDS_KERNEL:
                     frames.append(self._kernel_frame(uuid, base, offset, not frames))
+                elif kind == IMAGE_KIND_UNSLID_KERNELCACHE:
+                    frames.append(self._kernelcache_frame(base + offset, not frames))
                 else:
-                    frames.append(
-                        self._user_frame(uuid, base, kind, offset, not frames)
-                    )
+                    frame = self._user_frame(uuid, base, kind, offset, not frames)
+                    # a kernel stack also goes through images which are not of the kernelcache
+                    frame.kernel = key == "kernelFrames"
+                    frames.append(frame)
         return frames
 
-    @cached_property
-    def processes(self) -> List[PanicProcess]:
-        """Every process the report holds, with the call stack of each of its threads."""
-        result = []
-        for pid, process in (self._report_field("processByPid") or {}).items():
-            panic_process = PanicProcess(
-                pid=int(pid), name=process.get("procname") or ""
-            )
-            for tid, thread in (process.get("threadById") or {}).items():
-                panic_process.threads.append(
-                    PanicThread(
-                        tid=int(tid),
-                        name=thread.get("name"),
-                        frames=self._frames(thread),
-                    )
-                )
-            result.append(panic_process)
+    @staticmethod
+    def _wait_info(process: Mapping[str, Any]) -> dict:
+        """What the waiting threads of a process wait on, by their tid."""
+        result = {}
+        for entry in process.get("waitInfo") or []:
+            match = re.fullmatch(r"thread (\d+): (.+)", entry)
+            if match:
+                result[int(match.group(1))] = match.group(2)
         return result
 
     @cached_property
-    def panicked_thread_frames(self) -> List[PanicFrame]:
+    def processes(self) -> List[StackshotProcess]:
+        """Every process the report holds, with the call stack of each of its threads."""
+        result = []
+        for pid, process in (self._report_field("processByPid") or {}).items():
+            stackshot_process = StackshotProcess(
+                pid=int(pid),
+                name=process.get("procname") or "",
+                parent_pid=process.get("parentPid"),
+                user_id=process.get("userID"),
+                group_id=process.get("groupID"),
+                flags=list(process.get("flags") or []),
+                frontmost=bool(process.get("frontmost")),
+                resident_memory_bytes=process.get("residentMemoryBytes"),
+                user_time=process.get("userTimeTask"),
+                system_time=process.get("systemTimeTask"),
+                uptime=process.get("processUptime"),
+                raw=process,
+            )
+            wait_info = self._wait_info(process)
+            for tid, thread in (process.get("threadById") or {}).items():
+                stackshot_process.threads.append(
+                    StackshotThread(
+                        tid=int(tid),
+                        name=thread.get("name"),
+                        frames=self._frames(thread),
+                        state=list(thread.get("state") or []),
+                        wait_info=wait_info.get(int(tid)),
+                        queue=thread.get("dispatch_queue_label"),
+                        base_priority=thread.get("basePriority"),
+                        sched_priority=thread.get("schedPriority"),
+                        user_usec=thread.get("user_usec"),
+                        system_usec=thread.get("system_usec"),
+                        qos=thread.get("qosEffective"),
+                        flags=list(thread.get("snapshotFlags") or []),
+                        raw=thread,
+                    )
+                )
+            result.append(stackshot_process)
+        return result
+
+    def get_process(self, pid: int) -> Optional[StackshotProcess]:
+        return next((found for found in self.processes if found.pid == pid), None)
+
+    @cached_property
+    def memory_status(self) -> Optional[MemoryStatus]:
+        status = self._report_field("memoryStatus")
+        if not status:
+            return None
+        return MemoryStatus(
+            page_size=status.get("pageSize"),
+            pages=dict(status.get("memoryPages") or {}),
+            memory_pressure=status.get("memoryPressure"),
+            compressor_size=status.get("compressorSize"),
+            compressions=status.get("compressions"),
+            decompressions=status.get("decompressions"),
+            raw=status,
+        )
+
+    @property
+    def running_processes(self) -> List[StackshotProcess]:
+        """The processes with a thread on a CPU, each with those threads only."""
+        result = []
+        for process in self.processes:
+            threads = [thread for thread in process.threads if thread.running]
+            if threads:
+                result.append(dataclasses.replace(process, threads=threads))
+        return result
+
+    def find_processes(self, process: str) -> List[StackshotProcess]:
+        """Get the processes of the report with the given name, or the one with the given pid."""
+        if process.isdigit():
+            return [found for found in self.processes if found.pid == int(process)]
+        return [found for found in self.processes if found.name == process]
+
+    def _thread_marker(self, thread: StackshotThread) -> Optional[str]:
+        """What sets a thread apart from the others of the report, if anything."""
+        return None
+
+    def render_processes(self, processes: Iterable[StackshotProcess]) -> Text:
+        """Render the call stack of every thread of the given processes."""
+        text = Text()
+        for process in processes:
+            text.append("Process: ", style=STYLE_LABEL)
+            text.append(process.name or "?", style=STYLE_IMAGE)
+            text.append(f" (pid {process.pid}, {len(process.threads)} threads)\n")
+            for thread in process.threads:
+                text.append("\tThread: ", style=STYLE_LABEL)
+                text.append(f"tid {thread.tid}")
+                if thread.name:
+                    text.append(f" {thread.name}", style=STYLE_DETAIL)
+                marker = self._thread_marker(thread)
+                if marker:
+                    text.append(f" ({marker})", style=STYLE_FAILURE)
+                if thread.state:
+                    text.append(f" [{', '.join(thread.state)}]", style=STYLE_IDENTIFIER)
+                text.append("\n")
+                if thread.queue:
+                    text.append("\t\tQueue: ", style=STYLE_LABEL)
+                    text.append(f"{thread.queue}\n", style=STYLE_DETAIL)
+                if thread.wait_info:
+                    text.append("\t\tWaiting: ", style=STYLE_LABEL)
+                    text.append(f"{thread.wait_info}\n", style=STYLE_DETAIL)
+                self._render_thread_accounting(text, thread)
+                for frame in thread.frames:
+                    self._render_frame(text, frame, indent="\t\t")
+        return text
+
+    @staticmethod
+    def _render_thread_accounting(text: Text, thread: StackshotThread) -> None:
+        """Append the priority of a thread and the time it ran, as far as the report tells."""
+        parts = []
+        if thread.sched_priority is not None:
+            parts.append(f"priority {thread.sched_priority}")
+            if thread.base_priority not in (None, thread.sched_priority):
+                parts[-1] += f" (base {thread.base_priority})"
+        if thread.user_usec is not None:
+            parts.append(f"user {thread.user_usec} usec")
+        if thread.system_usec is not None:
+            parts.append(f"system {thread.system_usec} usec")
+        if parts:
+            text.append(f"\t\t{', '.join(parts)}\n", style=STYLE_IDENTIFIER)
+
+    @staticmethod
+    def _render_frame(text: Text, frame: StackshotFrame, indent: str = "\t") -> None:
+        text.append(indent)
+        text.append("kernel" if frame.kernel else "user  ", style=STYLE_IDENTIFIER)
+        text.append(" [")
+        text.append(frame.image or "?", style=STYLE_IMAGE)
+        text.append("] ")
+        text.append(f"0x{frame.address:x}", style=STYLE_ADDRESS)
+        if frame.symbol is not None:
+            text.append(" (")
+            text.append(frame.symbol, style=STYLE_SYMBOL)
+            text.append(f" + 0x{frame.symbol_offset:x})")
+        elif frame.image_offset is not None:
+            text.append(" (+ ")
+            text.append(f"0x{frame.image_offset:x}", style=STYLE_ADDRESS)
+            text.append(")")
+        text.append("\n")
+
+
+class StackshotCrashReport(StackshotReportBase):
+    """A stackshot of a running system, as sysdiagnose takes."""
+
+    BUG_TYPES = (BugType.Stackshot,)
+
+    @cached_property
+    def reason(self) -> Optional[str]:
+        """Why the stackshot was taken."""
+        return self._report_field("reason")
+
+    @cached_property
+    def notes(self) -> List[str]:
+        return list(self._report_field("notes") or [])
+
+    @cached_property
+    def kernel_version(self) -> Optional[str]:
+        return self._report_field("kernel")
+
+    @cached_property
+    def frontmost_pids(self) -> List[int]:
+        return list(self._report_field("frontmostPids") or [])
+
+    @property
+    def frontmost_processes(self) -> List[StackshotProcess]:
+        return [found for found in self.processes if found.pid in self.frontmost_pids]
+
+    def _render_details(self, text: Text) -> None:
+        # read off the report itself: listing `processes` names every frame of every thread
+        processes = self._report_field("processByPid") or {}
+        if self.reason:
+            text.append("Reason: ", style=STYLE_LABEL)
+            text.append(f"{self.reason}\n", style=STYLE_FAILURE)
+        for note in self.notes:
+            text.append("Note: ", style=STYLE_LABEL)
+            text.append(f"{note}\n", style=STYLE_DETAIL)
+        if self.product_type:
+            text.append("Device: ", style=STYLE_LABEL)
+            text.append(f"{self.product_type}, {self._report_field('build')}\n")
+        if self.kernel_version:
+            text.append("Kernel: ", style=STYLE_LABEL)
+            text.append(f"{self.kernel_version}\n")
+        threads = sum(
+            len(process.get("threadById") or {}) for process in processes.values()
+        )
+        memory = self.memory_status
+        if memory is not None and memory.pages:
+            text.append("Memory pages: ", style=STYLE_LABEL)
+            text.append(
+                ", ".join(f"{name} {count}" for name, count in memory.pages.items())
+            )
+            if memory.page_size:
+                text.append(f" ({memory.page_size} bytes each)")
+            text.append("\n")
+        text.append("Processes: ", style=STYLE_LABEL)
+        text.append(f"{len(processes)} ({threads} threads)\n")
+        for pid in self.frontmost_pids:
+            text.append("Frontmost: ", style=STYLE_LABEL)
+            name = (processes.get(str(pid)) or {}).get("procname") or "?"
+            text.append(name, style=STYLE_IMAGE)
+            text.append(f" (pid {pid})\n")
+        if processes:
+            text.append(
+                "\tCall stacks are printed for the processes asked for, by name or pid.\n",
+                style=STYLE_IDENTIFIER,
+            )
+
+
+class KernelModeCrashReport(StackshotReportBase):
+    BUG_TYPES = (BugType.ForceReset, BugType.Panic_210)
+
+    def _parse(self):
+        super()._parse()
+        self._panic_text = ""
+        if self._is_json and isinstance(self._data, dict):
+            self._panic_text = (
+                self._data.get("string") or self._data.get("panicString") or ""
+            )
+        elif isinstance(self._data, str):
+            self._panic_text = self._data
+
+    @cached_property
+    def _reported_kernel_images(self) -> dict:
+        names = {}
+        if self.kernel_uuid:
+            names[self.kernel_uuid.lower()] = KERNEL_IMAGE_NAME
+        for extension in self.kernel_extensions_in_backtrace:
+            names[extension.uuid.lower()] = extension.name
+        return names
+
+    @cached_property
+    def panicked_thread_frames(self) -> List[StackshotFrame]:
         """Call stack of the thread which panicked, empty when the report does not hold it."""
         if self.panicked_thread is None:
             return []
@@ -1023,48 +1364,10 @@ class KernelModeCrashReport(CrashReportBase):
                 self._render_frame(text, frame)
             self._render_missing_symbols(text)
 
-    def find_processes(self, process: str) -> List[PanicProcess]:
-        """Get the processes of the report with the given name, or the one with the given pid."""
-        if process.isdigit():
-            return [found for found in self.processes if found.pid == int(process)]
-        return [found for found in self.processes if found.name == process]
-
-    def render_processes(self, processes: Iterable[PanicProcess]) -> Text:
-        """Render the call stack of every thread of the given processes."""
-        text = Text()
-        for process in processes:
-            text.append("Process: ", style=STYLE_LABEL)
-            text.append(process.name or "?", style=STYLE_IMAGE)
-            text.append(f" (pid {process.pid}, {len(process.threads)} threads)\n")
-            for thread in process.threads:
-                text.append("\tThread: ", style=STYLE_LABEL)
-                text.append(f"tid {thread.tid}")
-                if thread.name:
-                    text.append(f" {thread.name}", style=STYLE_DETAIL)
-                if self.panicked_thread and thread.tid == self.panicked_thread.tid:
-                    text.append(" (panicked)", style=STYLE_FAILURE)
-                text.append("\n")
-                for frame in thread.frames:
-                    self._render_frame(text, frame, indent="\t\t")
-        return text
-
-    @staticmethod
-    def _render_frame(text: Text, frame: PanicFrame, indent: str = "\t") -> None:
-        text.append(indent)
-        text.append("kernel" if frame.kernel else "user  ", style=STYLE_IDENTIFIER)
-        text.append(" [")
-        text.append(frame.image or "?", style=STYLE_IMAGE)
-        text.append("] ")
-        text.append(f"0x{frame.address:x}", style=STYLE_ADDRESS)
-        if frame.symbol is not None:
-            text.append(" (")
-            text.append(frame.symbol, style=STYLE_SYMBOL)
-            text.append(f" + 0x{frame.symbol_offset:x})")
-        elif frame.image_offset is not None:
-            text.append(" (+ ")
-            text.append(f"0x{frame.image_offset:x}", style=STYLE_ADDRESS)
-            text.append(")")
-        text.append("\n")
+    def _thread_marker(self, thread: StackshotThread) -> Optional[str]:
+        if self.panicked_thread and thread.tid == self.panicked_thread.tid:
+            return "panicked"
+        return None
 
     def _render_missing_symbols(self, text: Text) -> None:
         """Say which symbols would name the frames left unnamed."""

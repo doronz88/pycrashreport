@@ -7,6 +7,7 @@ Currently supported crash types:
 
 - User mode crash reports
 - Kernel mode crash reports
+- Stackshots (`stacks-*.ips`, as sysdiagnose takes)
 
 All other crash reports will parse only basic metadata information.
 
@@ -89,6 +90,40 @@ and `--all` those of every process:
 pycrashreport panic-full.ips -p logd -p 1
 pycrashreport panic-full.ips --all
 ```
+
+## Stackshots
+
+A stackshot carries the same processes and threads as a panic, of a system which keeps running. It
+is summarized by why it was taken, the device, memory and the frontmost process; `-p`, `--all` and
+`--running` (`-r`, only the threads which were on a CPU) print call stacks, each thread with its
+state, what it waits on, its priority and the time it ran. `--kernelcache` and
+`--kernel-signatures` name its kernel frames like those of a panic:
+
+```shell
+pycrashreport stacks.ips -p SpringBoard
+pycrashreport stacks.ips --running --kernelcache kernelcache.release.iphone17 --kernel-signatures symbolicator/kernel
+```
+
+From Python, the report is a tree of plain objects: processes, their threads, and the frames of
+each thread. `StackshotCrashReport` and `KernelModeCrashReport` share it (both are a
+`StackshotReportBase`):
+
+```python
+from pycrashreport.crash_report import parse_report
+
+report = parse_report("/path/to/stacks.ips")
+print(report.reason, report.product_type, report.build_version, report.memory_status.pages["free"])
+
+for process in report.frontmost_processes:  # also .processes, .running_processes, .get_process(pid),
+    print(process.name, process.pid, process.parent_pid, process.resident_memory_bytes, process.flags)
+    for thread in process.threads:          # .find_processes("name or pid")
+        print(thread.tid, thread.name, thread.state, thread.wait_info, thread.sched_priority)
+        for frame in thread.frames:         # or .kernel_frames / .user_frames
+            print(hex(frame.address), frame.image, frame.symbol, frame.symbol_offset)
+```
+
+A field the objects do not have is still at hand as the report gave it, in `process.raw` and
+`thread.raw`.
 
 ```python
 from pathlib import Path
