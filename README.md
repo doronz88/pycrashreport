@@ -109,6 +109,13 @@ stacks of every other thread it carries. Naming their frames takes symbols, thro
 pycrashreport panic-full.ips --kernelcache kernelcache.release.iphone17 --kernel-signatures symbolicator/kernel
 ```
 
+- Or both from a [symbolicator-server](https://github.com/netanelc305/symbolicator-server) which scanned
+  the IPSW (`pip install pycrashreport[remote]`):
+
+```shell
+pycrashreport panic-full.ips --server http://localhost:3993
+```
+
 `-p` (name or pid, may be given several times) lists the threads of further processes of the panic,
 and `--all` those of every process:
 

@@ -4,6 +4,7 @@ import json
 import os
 import posixpath
 import re
+import uuid
 from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,8 +26,9 @@ from typing import (
 
 from apple_symbols import (
     DeviceSupportSymbols,
-    KernelSymbols,
+    KernelSymbolSource,
     SymbolImage,
+    UserlandSymbolSource,
     find_device_support_symbols,
 )
 from rich.console import Console
@@ -508,7 +510,7 @@ class CrashReportBase:
         return None
 
     @cached_property
-    def device_support_symbols(self) -> Optional[DeviceSupportSymbols]:
+    def device_support_symbols(self) -> Optional[UserlandSymbolSource]:
         """Symbols naming the userland frames the report left unnamed.
 
         Defaults to the Xcode DeviceSupport of the device and build the report came from, when
@@ -954,7 +956,7 @@ class StackshotReportBase(ProcessesReport):
 
     #: Symbols naming the kernel frames, which need the kernelcache the device ran. Assign them
     #: before reading any frames.
-    kernel_symbols: Optional[KernelSymbols] = None
+    kernel_symbols: Optional[KernelSymbolSource] = None
 
     def _report_field(self, name: str) -> Any:
         if self._is_json and isinstance(self._data, dict):
@@ -970,6 +972,14 @@ class StackshotReportBase(ProcessesReport):
         # "iPhone OS 16.2 (20C65)"
         match = re.search(r"\(([^)]+)\)\s*$", self._report_field("build") or "")
         return match.group(1) if match else None
+
+    @property
+    def kernelcache_uuid(self) -> Optional[str]:
+        """UUID of the kernelcache the device ran, when the report tells."""
+        for image in self._report_field("binaryImages") or []:
+            if image[2] == IMAGE_KIND_UNSLID_KERNELCACHE:
+                return str(uuid.UUID(image[0]))
+        return None
 
     @property
     def _reported_kernel_images(self) -> dict:
@@ -1407,6 +1417,16 @@ class KernelModeCrashReport(StackshotReportBase):
     @cached_property
     def kernel_uuid(self) -> Optional[str]:
         return self._line_value("Kernel UUID")
+
+    @property
+    def kernelcache_uuid(self) -> Optional[str]:
+        # given without dashes
+        if not self.fileset_kernelcache_uuid:
+            return None
+        try:
+            return str(uuid.UUID(self.fileset_kernelcache_uuid))
+        except ValueError:
+            return None
 
     @cached_property
     def boot_session_uuid(self) -> Optional[str]:

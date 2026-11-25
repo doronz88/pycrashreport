@@ -27,6 +27,7 @@ dynamic = ["dependencies", "version"]
 
 [project.optional-dependencies]
 test = ["pytest"]
+remote = ["apple-symbols[remote]"]
 
 [project.urls]
 "Homepage" = "https://github.com/doronz88/pycrashreport"

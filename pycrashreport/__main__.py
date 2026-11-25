@@ -6,6 +6,7 @@ from apple_symbols import KernelSymbols
 from rich.console import Console
 
 from pycrashreport.crash_report import (
+    CrashReportBase,
     StackshotReportBase,
     get_crash_report_from_file,
     render_processes,
@@ -30,6 +31,13 @@ def main(
             help="Directory of `ipsw` kernel symbolication signatures (the `kernel` directory of "
             "https://github.com/blacktop/symbolicator), to name the kernel functions of a panic or a stackshot. "
             "Requires --kernelcache and the `ipsw` tool."
+        ),
+    ] = None,
+    server: Annotated[
+        Optional[str],
+        typer.Option(
+            help="URL of a symbolicator-server to name userland and kernel frames with, instead of "
+            "local DeviceSupport and --kernelcache. Requires `pycrashreport[remote]`."
         ),
     ] = None,
     process: Annotated[
@@ -67,7 +75,15 @@ def main(
     """
     if kernel_signatures is not None and kernelcache is None:
         raise typer.BadParameter("--kernel-signatures requires --kernelcache")
+    if server is not None and (
+        kernelcache is not None or kernel_signatures is not None
+    ):
+        raise typer.BadParameter(
+            "--server cannot be used with --kernelcache or --kernel-signatures"
+        )
     report = get_crash_report_from_file(file)
+    if server is not None:
+        _use_server(report, server)
     if kernelcache is not None and isinstance(report, StackshotReportBase):
         try:
             report.kernel_symbols = KernelSymbols.load(kernelcache, kernel_signatures)
@@ -84,6 +100,46 @@ def main(
     console.print(report, soft_wrap=True)
     if processes is not None:
         console.print(processes, soft_wrap=True)
+
+
+def _use_server(report: CrashReportBase, server: str) -> None:
+    """Name the frames of the report with the symbols the server holds, where it has them."""
+    try:
+        from apple_symbols.remote import RemoteDeviceSymbols, RemoteKernelSymbols
+        from symbolicator_server.client import SymbolicatorClient
+        from symbolicator_server.exceptions import (
+            IncompatibleServerError,
+            ServerError,
+            ServerUnreachableError,
+        )
+    except ImportError as e:
+        raise typer.BadParameter(
+            f"--server requires `pip install pycrashreport[remote]`: {e}"
+        ) from e
+    try:
+        client = SymbolicatorClient.connect(server)
+    except ServerUnreachableError as e:
+        raise typer.BadParameter(f"{e.server} is unreachable: {e.reason}") from e
+    except IncompatibleServerError as e:
+        raise typer.BadParameter(
+            f"{e.server} speaks API version {e.server_api}, this client {e.client_api}"
+        ) from e
+    except ServerError as e:
+        raise typer.BadParameter(f"{server}: {e.message}") from e
+    if report.product_type and report.build_version:
+        try:
+            report.device_support_symbols = RemoteDeviceSymbols.for_build(
+                client, report.product_type, report.build_version
+            )
+        except LookupError as e:
+            typer.echo(f"warning: {e}", err=True)
+    if isinstance(report, StackshotReportBase) and report.kernelcache_uuid:
+        try:
+            report.kernel_symbols = RemoteKernelSymbols.for_kernelcache(
+                client, report.kernelcache_uuid
+            )
+        except LookupError as e:
+            typer.echo(f"warning: {e}", err=True)
 
 
 def cli() -> None:
