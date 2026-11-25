@@ -1,6 +1,7 @@
 import bisect
 import dataclasses
 import json
+import logging
 import os
 import posixpath
 import re
@@ -25,14 +26,23 @@ from typing import (
 
 from apple_symbols import (
     DeviceSupportSymbols,
-    KernelSymbols,
+    KernelSymbolSource,
     SymbolImage,
+    UserlandSymbolSource,
     find_device_support_symbols,
 )
 from rich.console import Console
 from rich.text import Text
 
+from pycrashreport import server as _server
 from pycrashreport.exit_reason import ExitReason
+from pycrashreport.symbols import KernelSymbolChain, UserlandSymbolChain
+
+
+logger = logging.getLogger(__name__)
+
+#: URL of the symbolicator server every report asks for symbols, unless told otherwise
+SERVER_ENVVAR = "PYCRASHREPORT_SERVER"
 
 Frame = namedtuple("Frame", "image_name image_base image_offset symbol symbol_offset")
 Register = namedtuple("Register", "name value")
@@ -458,6 +468,10 @@ class CrashReportBase:
         filename: Optional[str] = None,
     ) -> None:
         self.filename = filename
+        #: URL of a symbolicator server (https://github.com/netanelc305/symbolicator-server) to
+        #: name frames with, ahead of the symbols of this host. Assign another, or ``None`` for
+        #: none, before reading any frames.
+        self.symbol_server: Optional[str] = os.environ.get(SERVER_ENVVAR) or None
         self._data = data
         self._metadata = metadata
         self._parse()
@@ -508,7 +522,7 @@ class CrashReportBase:
         return None
 
     @cached_property
-    def device_support_symbols(self) -> Optional[DeviceSupportSymbols]:
+    def device_support_symbols(self) -> Optional[UserlandSymbolSource]:
         """Symbols naming the userland frames the report left unnamed.
 
         Defaults to the Xcode DeviceSupport of the device and build the report came from, when
@@ -524,11 +538,35 @@ class CrashReportBase:
         except OSError:
             return None
 
+    @cached_property
+    def _symbol_client(self) -> Any:
+        """The client of the symbolicator server of the report, ``None`` without one."""
+        if not self.symbol_server:
+            return None
+        return _server.connect(self.symbol_server)
+
+    @cached_property
+    def _userland_symbols(self) -> Optional[UserlandSymbolSource]:
+        """What names userland frames: the symbolicator server first, then this host."""
+        sources: List[UserlandSymbolSource] = []
+        client = self._symbol_client
+        if client is not None and self.product_type and self.build_version:
+            remote = _server.userland_symbols(
+                client, self.product_type, self.build_version
+            )
+            if remote is not None:
+                sources.append(remote)
+        if self.device_support_symbols is not None:
+            sources.append(self.device_support_symbols)
+        if len(sources) > 1:
+            return UserlandSymbolChain(sources)
+        return sources[0] if sources else None
+
     def _symbolicate_user_frame(
         self, image: SymbolImage, offset: int, innermost: bool
     ) -> Optional[tuple]:
         """Name the function at ``offset`` of a userland image, with the offset from its start."""
-        symbols = self.device_support_symbols
+        symbols = self._userland_symbols
         if symbols is None:
             return None
         # All but the innermost frame hold a return address, which may already belong to the
@@ -789,7 +827,7 @@ class UserModeCrashReport(CrashReportBase):
     def _symbolicate_json_frame(
         self, image: Mapping[str, Any], frame: Mapping[str, Any], innermost: bool
     ) -> Optional[tuple]:
-        symbols = self.device_support_symbols
+        symbols = self._userland_symbols
         offset = frame.get("imageOffset")
         if symbols is None or offset is None or not image.get("uuid"):
             return None
@@ -954,7 +992,36 @@ class StackshotReportBase(ProcessesReport):
 
     #: Symbols naming the kernel frames, which need the kernelcache the device ran. Assign them
     #: before reading any frames.
-    kernel_symbols: Optional[KernelSymbols] = None
+    kernel_symbols: Optional[KernelSymbolSource] = None
+
+    @cached_property
+    def _kernel_symbol_source(self) -> Optional[KernelSymbolSource]:
+        """What names kernel frames: the symbolicator server first, then this host."""
+        sources: List[KernelSymbolSource] = []
+        client = self._symbol_client
+        if client is not None:
+            if self.kernelcache_uuid is None:
+                logger.warning(
+                    "The report does not tell which kernelcache the device ran, so "
+                    f"{self.symbol_server} cannot name its kernel frames"
+                )
+            else:
+                remote = _server.kernel_symbols(client, self.kernelcache_uuid)
+                if remote is not None:
+                    sources.append(remote)
+        if self.kernel_symbols is not None:
+            sources.append(self.kernel_symbols)
+        if len(sources) > 1:
+            return KernelSymbolChain(sources)
+        return sources[0] if sources else None
+
+    @property
+    def kernelcache_uuid(self) -> Optional[str]:
+        """UUID of the whole kernelcache the device ran, when the report tells."""
+        for image in self._report_field("binaryImages") or []:
+            if image[2] == IMAGE_KIND_UNSLID_KERNELCACHE:
+                return image[0].lower()
+        return None
 
     def _report_field(self, name: str) -> Any:
         if self._is_json and isinstance(self._data, dict):
@@ -985,9 +1052,9 @@ class StackshotReportBase(ProcessesReport):
             image=self._reported_kernel_images.get(uuid.lower(), uuid),
             image_offset=offset,
         )
-        if self.kernel_symbols is None:
+        if self._kernel_symbol_source is None:
             return frame
-        image = self.kernel_symbols.image_by_uuid(uuid)
+        image = self._kernel_symbol_source.image_by_uuid(uuid)
         if image is None:
             return frame
         frame.image = image.name
@@ -1001,7 +1068,7 @@ class StackshotReportBase(ProcessesReport):
         """Name the function at the unslid ``address`` of the kernelcache."""
         # All but the innermost frame hold a return address: look up the call instruction instead
         delta = 0 if innermost else 1
-        symbol = self.kernel_symbols.symbolicate(address - delta)
+        symbol = self._kernel_symbol_source.symbolicate(address - delta)
         if symbol is not None:
             frame.symbol = symbol[0]
             frame.symbol_offset = symbol[1] + delta
@@ -1009,7 +1076,9 @@ class StackshotReportBase(ProcessesReport):
     @cached_property
     def _kernel_images_by_address(self) -> tuple:
         """The images of the kernel symbols in the order of their code, after where each starts."""
-        images = sorted(self.kernel_symbols.images, key=lambda image: image.text_exec)
+        images = sorted(
+            self._kernel_symbol_source.images, key=lambda image: image.text_exec
+        )
         return [image.text_exec for image in images], images
 
     def _kernelcache_frame(self, address: int, innermost: bool) -> StackshotFrame:
@@ -1017,7 +1086,7 @@ class StackshotReportBase(ProcessesReport):
         frame = StackshotFrame(
             address=address, kernel=True, image=KERNELCACHE_IMAGE_NAME
         )
-        if self.kernel_symbols is None:
+        if self._kernel_symbol_source is None:
             return frame
         # the code of the images of a kernelcache is laid out back to back, so an address
         # belongs to the image whose code starts closest below it
@@ -1058,7 +1127,7 @@ class StackshotReportBase(ProcessesReport):
         self, uuid: str, base: int, kind: str, offset: int, innermost: bool
     ) -> StackshotFrame:
         frame = StackshotFrame(address=base + offset, image=uuid, image_offset=offset)
-        symbols = self.device_support_symbols
+        symbols = self._userland_symbols
         if symbols is None:
             return frame
         if kind == IMAGE_KIND_SHARED_CACHE:
@@ -1404,6 +1473,15 @@ class KernelModeCrashReport(StackshotReportBase):
     def fileset_kernelcache_uuid(self) -> Optional[str]:
         return self._line_value("Fileset Kernelcache UUID")
 
+    @property
+    def kernelcache_uuid(self) -> Optional[str]:
+        value = self.fileset_kernelcache_uuid
+        if value is None or not re.fullmatch(r"[0-9a-fA-F]{32}", value):
+            return super().kernelcache_uuid
+        # the panic gives it without the dashes
+        value = value.lower()
+        return f"{value[:8]}-{value[8:12]}-{value[12:16]}-{value[16:20]}-{value[20:]}"
+
     @cached_property
     def kernel_uuid(self) -> Optional[str]:
         return self._line_value("Kernel UUID")
@@ -1557,19 +1635,17 @@ class KernelModeCrashReport(StackshotReportBase):
         """Say which symbols would name the frames left unnamed."""
         frames = self.panicked_thread_frames
         if any(frame.kernel for frame in frames):
-            if self.kernel_symbols is None:
+            if self._kernel_symbol_source is None:
                 text.append(
                     "\tKernel frames are named given the kernelcache the device ran.\n",
                     style=STYLE_IDENTIFIER,
                 )
-            elif not self.kernel_symbols.has_symbols:
+            elif not self._kernel_symbol_source.has_symbols:
                 text.append(
                     "\tThe kernelcache holds no symbols, kernel frames are named given signatures for it.\n",
                     style=STYLE_IDENTIFIER,
                 )
-        if self.device_support_symbols is None and not all(
-            frame.kernel for frame in frames
-        ):
+        if self._userland_symbols is None and not all(frame.kernel for frame in frames):
             text.append(
                 f"\tUser frames are named given the Xcode DeviceSupport of "
                 f"{self.product_type} ({self.build_version}).\n",
@@ -1772,7 +1848,7 @@ class SpindumpCrashReport(ProcessesReport):
         self, process: SpindumpProcess, frames: Iterable[SpindumpFrame]
     ) -> None:
         """Name the frames the report left unnamed, using the symbols of the images of the process."""
-        symbols = self.device_support_symbols
+        symbols = self._userland_symbols
         if symbols is None:
             return
         for frame in frames:
@@ -1883,7 +1959,7 @@ class SpindumpCrashReport(ProcessesReport):
             text.append("Heaviest stack:\n", style=STYLE_LABEL)
             for frame in self.heaviest_stack:
                 self._render_frame(text, frame, indent="\t")
-            if self.device_support_symbols is None and any(
+            if self._userland_symbols is None and any(
                 frame.symbol is None for frame in self.heaviest_stack
             ):
                 text.append(

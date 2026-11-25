@@ -10,6 +10,7 @@ from pycrashreport.crash_report import (
     get_crash_report_from_file,
     render_processes,
 )
+from pycrashreport.symbols import SymbolServerError
 
 app = typer.Typer(add_completion=False)
 
@@ -30,6 +31,17 @@ def main(
             help="Directory of `ipsw` kernel symbolication signatures (the `kernel` directory of "
             "https://github.com/blacktop/symbolicator), to name the kernel functions of a panic or a stackshot. "
             "Requires --kernelcache and the `ipsw` tool."
+        ),
+    ] = None,
+    server: Annotated[
+        Optional[str],
+        typer.Option(
+            "--server",
+            "-s",
+            envvar="PYCRASHREPORT_SERVER",
+            help="URL of a symbolicator server (https://github.com/netanelc305/symbolicator-server), "
+            "e.g. http://localhost:3993, to name frames with the symbols it holds. Frames it does "
+            "not name are left to the Xcode DeviceSupport of this host and to --kernelcache.",
         ),
     ] = None,
     process: Annotated[
@@ -63,7 +75,7 @@ def main(
     Print an Apple crash report.
 
     Userland frames the report left unnamed are named when this host holds the Xcode DeviceSupport
-    of the device and build the report came from.
+    of the device and build the report came from, or a symbolicator server given by --server does.
     """
     if kernel_signatures is not None and kernelcache is None:
         raise typer.BadParameter("--kernel-signatures requires --kernelcache")
@@ -75,13 +87,16 @@ def main(
             raise typer.BadParameter(
                 f"Reading the kernel symbols of {kernelcache} failed: {e}"
             ) from e
+    if server is not None:
+        report.symbol_server = server
     try:
         processes = render_processes(report, process or [], all_processes, running)
-    except ValueError as e:
+        rendered = report.__rich__()
+    except (ValueError, SymbolServerError) as e:
         raise typer.BadParameter(str(e)) from e
     # printed as a renderable, so colors follow the terminal: none when the output is piped
     console = Console(highlight=False)
-    console.print(report, soft_wrap=True)
+    console.print(rendered, soft_wrap=True)
     if processes is not None:
         console.print(processes, soft_wrap=True)
 
