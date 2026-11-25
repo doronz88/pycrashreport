@@ -109,6 +109,26 @@ stacks of every other thread it carries. Naming their frames takes symbols, thro
 pycrashreport panic-full.ips --kernelcache kernelcache.release.iphone17 --kernel-signatures symbolicator/kernel
 ```
 
+### From a symbolicator server
+
+A [symbolicator-server](https://github.com/netanelc305/symbolicator-server) holds the symbols of
+scanned IPSWs, so neither the DeviceSupport nor the kernelcache of the device has to be on this
+host. Give its URL with `--server`, or once in `PYCRASHREPORT_SERVER`:
+
+```shell
+pycrashreport panic-full.ips --server http://localhost:3993
+```
+
+The server is asked first. Every frame it does not name is left to the symbols of this host, the
+DeviceSupport and `--kernelcache`, which also name everything when the server does not hold the
+build of the report. What the server could not help with is logged as a warning. A stackshot does
+not tell which kernelcache the device ran, so its kernel frames are named by `--kernelcache` alone.
+
+`PYCRASHREPORT_SERVER` goes for every report parsed from Python as well, whatever parses it.
+`report.symbol_server` holds the URL: assign another, or `None` for none, before reading any frame.
+A server which cannot be reached raises `pycrashreport.symbols.SymbolServerError` once frames are
+read.
+
 `-p` (name or pid, may be given several times) lists the threads of further processes of the panic,
 and `--all` those of every process:
 
