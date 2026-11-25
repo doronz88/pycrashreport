@@ -7,7 +7,7 @@ asks the server of its ``symbol_server``, which ``PYCRASHREPORT_SERVER`` sets fo
 """
 
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 
 from apple_symbols.remote import RemoteDeviceSymbols, RemoteKernelSymbols
 from symbolicator_server.client import SymbolicatorClient
@@ -26,7 +26,7 @@ def connect(server: str) -> SymbolicatorClient:
     """
     Get a client of the server at the given URL, e.g. ``http://localhost:3993``.
 
-    :raises SymbolServerError: If the server cannot be reached, or speaks another API version.
+    :raises SymbolServerError: If the server cannot be reached, or does not tell its routes.
     """
     try:
         return SymbolicatorClient.connect(server)
@@ -34,8 +34,8 @@ def connect(server: str) -> SymbolicatorClient:
         raise SymbolServerError(f"Reaching {e.server} failed: {e.reason}") from e
     except IncompatibleServerError as e:
         raise SymbolServerError(
-            f"{e.server} speaks API version {e.server_api}, not {e.client_api} as the "
-            f"installed symbolicator-server does"
+            f"{e.server} speaks version {e.server_api} of {e.route}, not {e.client_api} as "
+            f"the installed symbolicator-server does"
         ) from e
     except ServerError as e:
         raise SymbolServerError(f"{server} failed: {e.message}") from e
@@ -71,3 +71,25 @@ def kernel_symbols(
         )
         return None
     return symbols
+
+
+def kernel_symbols_of_build(
+    client: SymbolicatorClient,
+    product_type: str,
+    build_version: str,
+    image_uuids: Iterable[str],
+) -> Optional[RemoteKernelSymbols]:
+    """
+    Get the symbols of the kernelcache of a device and build which holds the given kernel images,
+    for a report which does not tell its kernelcache. ``None`` when the server holds none.
+    """
+    try:
+        return RemoteKernelSymbols.for_build(
+            client, product_type, build_version, image_uuids
+        )
+    except LookupError:
+        logger.warning(
+            f"{client.server} holds no kernelcache of {product_type} ({build_version}) with "
+            f"the kernel images of the report, scan its IPSW to name kernel frames with it"
+        )
+        return None

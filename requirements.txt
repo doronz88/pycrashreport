@@ -1,3 +1,4 @@
-apple-symbols[remote]>=0.0.3
+apple-symbols[remote]>=0.0.4
 rich
+symbolicator-server>=0.5.0
 typer

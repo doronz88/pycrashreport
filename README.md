@@ -122,7 +122,8 @@ pycrashreport panic-full.ips --server http://localhost:3993
 The server is asked first. Every frame it does not name is left to the symbols of this host, the
 DeviceSupport and `--kernelcache`, which also name everything when the server does not hold the
 build of the report. What the server could not help with is logged as a warning. A stackshot does
-not tell which kernelcache the device ran, so its kernel frames are named by `--kernelcache` alone.
+not tell which kernelcache the device ran, so the server is asked for the one of its device and
+build which holds its kernel images.
 
 `PYCRASHREPORT_SERVER` goes for every report parsed from Python as well, whatever parses it.
 `report.symbol_server` holds the URL: assign another, or `None` for none, before reading any frame.

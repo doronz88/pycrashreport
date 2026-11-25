@@ -1000,15 +1000,19 @@ class StackshotReportBase(ProcessesReport):
         sources: List[KernelSymbolSource] = []
         client = self._symbol_client
         if client is not None:
-            if self.kernelcache_uuid is None:
-                logger.warning(
-                    "The report does not tell which kernelcache the device ran, so "
-                    f"{self.symbol_server} cannot name its kernel frames"
-                )
-            else:
+            remote = None
+            if self.kernelcache_uuid is not None:
                 remote = _server.kernel_symbols(client, self.kernelcache_uuid)
-                if remote is not None:
-                    sources.append(remote)
+            elif self.product_type and self.build_version:
+                # a stackshot does not tell its kernelcache, only its kernel images
+                remote = _server.kernel_symbols_of_build(
+                    client,
+                    self.product_type,
+                    self.build_version,
+                    self._kernel_image_uuids,
+                )
+            if remote is not None:
+                sources.append(remote)
         if self.kernel_symbols is not None:
             sources.append(self.kernel_symbols)
         if len(sources) > 1:
@@ -1022,6 +1026,15 @@ class StackshotReportBase(ProcessesReport):
             if image[2] == IMAGE_KIND_UNSLID_KERNELCACHE:
                 return image[0].lower()
         return None
+
+    @property
+    def _kernel_image_uuids(self) -> List[str]:
+        """UUID of every kernel image the report tells."""
+        return [
+            image[0]
+            for image in self._report_field("binaryImages") or []
+            if image[2] in IMAGE_KINDS_KERNEL
+        ]
 
     def _report_field(self, name: str) -> Any:
         if self._is_json and isinstance(self._data, dict):
