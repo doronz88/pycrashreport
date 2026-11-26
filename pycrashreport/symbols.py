@@ -1,6 +1,7 @@
 """Symbol sources which ask several others in turn, so what one cannot name the next may."""
 
-from typing import List, Optional, Sequence, Tuple
+from contextlib import ExitStack, contextmanager
+from typing import Generator, List, Optional, Sequence, Tuple
 
 from apple_symbols import (
     KernelImage,
@@ -8,6 +9,7 @@ from apple_symbols import (
     SymbolImage,
     UserlandSymbolSource,
 )
+from apple_symbols.remote import RemoteDeviceSymbols, RemoteKernelSymbols
 
 
 class SymbolServerError(Exception):
@@ -26,6 +28,23 @@ class UserlandSymbolChain:
         self.images: List[SymbolImage] = sorted(
             by_uuid.values(), key=lambda image: image.vmaddr
         )
+        self._asked: Sequence[UserlandSymbolSource] = self.sources
+
+    @contextmanager
+    def collecting(self) -> Generator[None, None, None]:
+        """Within it nothing is named: the sources of a symbolicator server only note what they
+        are asked, and fetch it all in one request on leaving. The others are not asked."""
+        remotes = [
+            source for source in self.sources if isinstance(source, RemoteDeviceSymbols)
+        ]
+        self._asked = remotes
+        try:
+            with ExitStack() as stack:
+                for remote in remotes:
+                    stack.enter_context(remote.collecting())
+                yield
+        finally:
+            self._asked = self.sources
 
     @property
     def has_shared_cache_images(self) -> bool:
@@ -56,7 +75,7 @@ class UserlandSymbolChain:
     def symbolicate(
         self, image: SymbolImage, address: int
     ) -> Optional[Tuple[str, int]]:
-        for source in self.sources:
+        for source in self._asked:
             # every source knows an image as its own object, at its own address
             own = source.image_by_uuid(image.uuid)
             if own is None:
@@ -77,6 +96,23 @@ class KernelSymbolChain:
             for image in source.images:
                 by_uuid.setdefault(image.uuid, image)
         self.images: List[KernelImage] = list(by_uuid.values())
+        self._asked: Sequence[KernelSymbolSource] = self.sources
+
+    @contextmanager
+    def collecting(self) -> Generator[None, None, None]:
+        """Within it nothing is named: the sources of a symbolicator server only note what they
+        are asked, and fetch it all in one request on leaving. The others are not asked."""
+        remotes = [
+            source for source in self.sources if isinstance(source, RemoteKernelSymbols)
+        ]
+        self._asked = remotes
+        try:
+            with ExitStack() as stack:
+                for remote in remotes:
+                    stack.enter_context(remote.collecting())
+                yield
+        finally:
+            self._asked = self.sources
 
     @property
     def has_symbols(self) -> bool:
@@ -90,7 +126,7 @@ class KernelSymbolChain:
         return None
 
     def symbolicate(self, address: int) -> Optional[Tuple[str, int]]:
-        for source in self.sources:
+        for source in self._asked:
             symbol = source.symbolicate(address)
             if symbol is not None:
                 return symbol

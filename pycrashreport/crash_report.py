@@ -13,6 +13,7 @@ from functools import cached_property
 from io import StringIO
 from typing import (
     Any,
+    Callable,
     ClassVar,
     IO,
     Iterable,
@@ -21,6 +22,7 @@ from typing import (
     Mapping,
     Optional,
     Tuple,
+    TypeVar,
     Union,
 )
 
@@ -40,6 +42,7 @@ from pycrashreport.symbols import KernelSymbolChain, UserlandSymbolChain
 
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 #: URL of the symbolicator server every report asks for symbols, unless told otherwise
 SERVER_ENVVAR = "PYCRASHREPORT_SERVER"
@@ -562,6 +565,21 @@ class CrashReportBase:
             return UserlandSymbolChain(sources)
         return sources[0] if sources else None
 
+    def _symbol_sources(self) -> List[object]:
+        """Everything which names the frames of the report."""
+        return [self._userland_symbols]
+
+    def _named(self, read: Callable[[], _T]) -> _T:
+        """Read frames with ``read``, asking a symbolicator server for all their names at once.
+
+        The frames are read twice then: once for the server's symbols to note every address, which
+        they fetch in one request, and once to name them.
+        """
+        if self.symbol_server:
+            with _server.collecting(self.symbol_server, self._symbol_sources()):
+                read()
+        return read()
+
     def _symbolicate_user_frame(
         self, image: SymbolImage, offset: int, innermost: bool
     ) -> Optional[tuple]:
@@ -713,6 +731,11 @@ class UserModeCrashReport(CrashReportBase):
         """Every thread of the process, with its call stack. Empty for a report in the text format."""
         if not self._is_json:
             return []
+        # read on its own, before the stacks of the other threads are
+        faulting_frames = self.frames
+        return self._named(lambda: self._read_threads(faulting_frames))
+
+    def _read_threads(self, faulting_frames: List[Frame]) -> List[CrashThread]:
         return [
             CrashThread(
                 index=index,
@@ -722,7 +745,7 @@ class UserModeCrashReport(CrashReportBase):
                 crashed=bool(thread.get("triggered")),
                 # the stack of the faulting thread is `frames`, and is not read twice
                 frames=(
-                    self.frames
+                    faulting_frames
                     if index == self.faulting_thread
                     else self._json_frames(thread)
                 ),
@@ -794,7 +817,8 @@ class UserModeCrashReport(CrashReportBase):
     def frames(self) -> List[Frame]:
         result = []
         if self._is_json:
-            return self._json_frames(self._data["threads"][self.faulting_thread])
+            thread = self._data["threads"][self.faulting_thread]
+            return self._named(lambda: self._json_frames(thread))
         else:
             for line in self._text_section(f"Thread {self.faulting_thread} Crashed:"):
                 splitted = line.split()
@@ -1201,9 +1225,15 @@ class StackshotReportBase(ProcessesReport):
                 result[int(match.group(1))] = match.group(2)
         return result
 
+    def _symbol_sources(self) -> List[object]:
+        return [self._userland_symbols, self._kernel_symbol_source]
+
     @cached_property
     def processes(self) -> List[StackshotProcess]:
         """Every process the report holds, with the call stack of each of its threads."""
+        return self._named(self._read_processes)
+
+    def _read_processes(self) -> List[StackshotProcess]:
         result = []
         for pid, process in (self._report_field("processByPid") or {}).items():
             stackshot_process = StackshotProcess(
@@ -1884,6 +1914,9 @@ class SpindumpCrashReport(ProcessesReport):
     @cached_property
     def processes(self) -> List[SpindumpProcess]:
         """Every process the report holds, with the call tree of its samples."""
+        return self._named(self._read_processes)
+
+    def _read_processes(self) -> List[SpindumpProcess]:
         result = []
         for lines in self._sections[1:]:
             match = self._PROCESS.match(lines[0])
