@@ -7,7 +7,12 @@ from apple_symbols import DeviceSupportSymbols, KernelSymbols
 from apple_symbols.testing import build_fileset, build_macho
 from symbolicator_server.client import SymbolicatorClient
 from symbolicator_server.exceptions import ServerUnreachableError
-from symbolicator_server.models import FunctionSymbol, ImageInfo, SharedCache
+from symbolicator_server.models import (
+    FunctionSymbol,
+    ImageInfo,
+    Kernelcache,
+    SharedCache,
+)
 from typer.testing import CliRunner
 
 from pycrashreport import __main__ as cli
@@ -40,6 +45,7 @@ RUNNER = CliRunner(env={"NO_COLOR": "1", "FORCE_COLOR": None, "TERM": "dumb"})
 SERVER = "http://symbolicator.invalid"
 KERNELCACHE_UUID = "2145355911C9E159EAAF481CD5EA4561"
 KERNELCACHE_UUID_DASHED = "21453559-11c9-e159-eaaf-481cd5ea4561"
+OTHER_KERNELCACHE_UUID = "136EF85E-1D94-2F7D-6168-1D2D94F042AF"
 # The server keeps kernel addresses with bit 63 cleared
 HIGH_BIT = 1 << 63
 
@@ -64,7 +70,29 @@ class FakeServer:
             )
         ]
 
+    def find_kernelcaches(self, device: str, build: str) -> list:
+        if (device, build) != ("iPhone17,3", "23E246"):
+            return []
+        return [
+            # another kernelcache of the IPSW, which holds none of the images of the report
+            Kernelcache(
+                OTHER_KERNELCACHE_UUID, "kernelcache.research.iPhone17,3", None
+            ),
+            Kernelcache(
+                KERNELCACHE_UUID_DASHED.upper(), "kernelcache.release.iPhone17,3", None
+            ),
+        ]
+
     def kernelcache_images(self, uuid: str) -> Optional[list]:
+        if uuid.upper() == OTHER_KERNELCACHE_UUID:
+            return [
+                ImageInfo(
+                    "0" * 8 + "-0000-0000-0000-" + "1" * 12,
+                    "com.apple.kernel",
+                    0,
+                    0x1000,
+                )
+            ]
         if uuid.lower() == KERNEL_UUID:
             # known, but as an image and not as a kernelcache
             return []
@@ -113,7 +141,13 @@ def server(monkeypatch: pytest.MonkeyPatch) -> list:
         if url != SERVER:
             raise ServerUnreachableError(url, "no such host")
         client = SymbolicatorClient(url)
-        for name in ("find_dscs", "dsc_images", "kernelcache_images", "image_symbols"):
+        for name in (
+            "find_dscs",
+            "dsc_images",
+            "find_kernelcaches",
+            "kernelcache_images",
+            "image_symbols",
+        ):
             monkeypatch.setattr(client, name, getattr(fake, name))
         return client
 
@@ -292,15 +326,28 @@ def test_server_does_not_take_another_image_for_a_kernelcache(
     assert [KERNEL_UUID in message for message in caplog.messages] == [True]
 
 
-def test_server_tells_a_report_without_its_kernelcache(caplog):
+def test_server_finds_the_kernelcache_of_a_report_which_does_not_tell_it(caplog):
+    # as a stackshot, which tells its device, its build and its kernel images only
+    report = panic(None)
+    assert report.kernelcache_uuid is None
+    assert named(report.panicked_thread_frames[:1]) == [
+        ("com.apple.kernel", "_remote_panic", 0x10)
+    ]
+    assert caplog.messages == []
+
+
+def test_server_tells_a_report_whose_kernelcache_it_does_not_hold(
+    monkeypatch: pytest.MonkeyPatch, caplog
+):
+    monkeypatch.setattr(FakeServer, "find_kernelcaches", lambda self, device, build: [])
     report = panic(None)
     assert named(report.panicked_thread_frames[:1]) == [("kernel", None, None)]
     assert named(report.panicked_thread_frames[3:4]) == [
         ("libfoo.dylib", "remote_bar", 0x10)
     ]
     assert caplog.messages == [
-        f"The report does not tell which kernelcache the device ran, so {SERVER} "
-        f"cannot name its kernel frames"
+        f"{SERVER} holds no kernelcache of iPhone17,3 (23E246) with the kernel images of "
+        f"the report, scan its IPSW to name kernel frames with it"
     ]
 
 
