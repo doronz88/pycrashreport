@@ -91,6 +91,21 @@ Every namespace is named. A code is named when its namespace gives it a fixed me
 be read from XNU or from iOS (signals, jetsam, code signing, dyld, libxpc, exec, FrontBoard,
 libsystem, the watchdog, guards and RealityKit), and printed as a number otherwise.
 
+A panic over an exception of the kernel (a data abort, an undefined instruction and the like)
+gives the registers at the exception, which are printed under it. `report.registers` holds them,
+and `report.register_frames` where `pc` and `lr` point, for the ones the kernel symbols name:
+
+```
+Panic: Kernel data abort. at pc 0xfffffff00a222014, lr 0xfffffff0089ac638 (saved state: 0xffffffe8156a3340)
+Registers:
+      x0 = 0x0000000000000000       x1 = 0x0000000000000010       x2 = 0xffffffe4ccb3a000       x3 = 0x0000000000000000
+      ...
+     x28 = 0xffffffe4cc021b00       fp = 0xffffffe8156a3680       lr = 0xfffffff0089ac638       sp = 0xffffffe8156a3640
+      pc = 0xfffffff00a222014     cpsr = 0x0000000060400204      esr = 0x0000000096000006      far = 0x0000000000000010
+        pc     [com.apple.kernel] 0xfffffff00a222014 (thread_invoke + 0x498)
+        lr     [com.apple.driver.AppleH11ANEInterface] 0xfffffff0089ac638 (__ZN12ANEScheduler20unwireThreadFunctionEPv + 0x10c)
+```
+
 ## Symbolication
 
 A panic report gets the call stack of the thread which panicked, and `report.processes` holds the

@@ -99,12 +99,50 @@ def kernel_symbols(tmp_path: Path) -> KernelSymbols:
     return KernelSymbols.load(kernelcache, index_dir=tmp_path / "kernel_index")
 
 
-def panic_report() -> KernelModeCrashReport:
+def exception_panic_text(pc: int, lr: int) -> str:
+    """A panic over an exception, which the kernel prints the registers of after its first line."""
+    registers = [f"x{i}" for i in range(29)] + [
+        "fp",
+        "lr",
+        "sp",
+        "pc",
+        "cpsr",
+        "esr",
+        "far",
+    ]
+    values = {
+        "x0": 0,
+        "x1": 0x10,
+        "lr": lr,
+        "sp": 0xFFFFFFE8156A3690,
+        "pc": pc,
+        "cpsr": 0x60400204,
+        "esr": 0x96000006,
+        "far": 0x10,
+    }
+    rows = [
+        "\t  "
+        + " ".join(
+            f"{name + ':':<4} 0x{values.get(name, 0xFFFFFFE4CCB3A000 + i + j):016x}"
+            for j, name in enumerate(registers[i : i + 4])
+        )
+        for i in range(0, len(registers), 4)
+    ]
+    first, *rest = PANIC_TEXT.splitlines()
+    first = first.replace(
+        "something broke",
+        f"Kernel data abort. at pc 0x{pc:016x}, lr 0x{lr:016x} "
+        f"(saved state: 0xffffffe8156a3340)",
+    )
+    return "\n".join([first, *rows, *rest])
+
+
+def panic_report(panic_text: str = PANIC_TEXT) -> KernelModeCrashReport:
     """A panic whose panicked thread went through every kind of image a report locates frames with."""
     payload = {
         "product": "iPhone17,3",
         "build": "iPhone OS 26.4 (23E246)",
-        "panicString": PANIC_TEXT,
+        "panicString": panic_text,
         "binaryImages": [
             [KERNEL_UUID, KERNEL_VMADDR + TEXT_EXEC + KERNEL_SLIDE, "T"],
             [KEXT_UUID, KEXT_VMADDR + TEXT_EXEC + KERNEL_SLIDE, "T"],
@@ -254,6 +292,57 @@ def test_panic_kernel_frames_are_named_by_a_kernelcache(kernel_symbols: KernelSy
         ("com.apple.kernel", None, None),
     ]
     assert "Kernel frames are named" not in report.__rich__().plain
+
+
+def test_panic_over_an_exception_tells_its_registers(kernel_symbols: KernelSymbols):
+    pc = KERNEL_VMADDR + TEXT_EXEC + KERNEL_SLIDE + 0x110
+    lr = KEXT_VMADDR + TEXT_EXEC + KERNEL_SLIDE + 0x180
+    report = panic_report(exception_panic_text(pc, lr))
+    report.kernel_symbols = kernel_symbols
+
+    assert report.panic_string.startswith("Kernel data abort. at pc ")
+    assert [register.name for register in report.registers] == [
+        *(f"x{i}" for i in range(29)),
+        "fp",
+        "lr",
+        "sp",
+        "pc",
+        "cpsr",
+        "esr",
+        "far",
+    ]
+    registers = {register.name: register.value for register in report.registers}
+    assert (registers["pc"], registers["lr"]) == (pc, lr)
+    assert (registers["esr"], registers["far"]) == (0x96000006, 0x10)
+    # what follows the registers is still read
+    assert report.debugger_message == "panic"
+    assert report.panicked_task is not None
+
+    assert [
+        (name, frame.image, frame.symbol, frame.symbol_offset)
+        for name, frame in report.register_frames
+    ] == [
+        ("pc", "com.apple.kernel", "panic", 0x10),
+        # `lr` is an address to return to, as a frame which called another is
+        ("lr", "com.apple.driver.Foo", "Foo_start", 0x80),
+    ]
+    text = report.__rich__().plain
+    assert f"pc = 0x{pc:016x}" in text
+    assert f"[com.apple.kernel] 0x{pc:x} (panic + 0x10)" in text
+
+
+def test_panic_registers_point_nowhere_without_symbols():
+    pc = KERNEL_VMADDR + TEXT_EXEC + KERNEL_SLIDE + 0x110
+    report = panic_report(exception_panic_text(pc, 0))
+    assert len(report.registers) == 36
+    assert report.register_frames == []
+    assert f"pc = 0x{pc:016x}" in report.__rich__().plain
+
+
+def test_panic_which_is_not_over_an_exception_has_no_registers():
+    report = panic_report()
+    assert report.registers == []
+    assert "Registers:" not in report.__rich__().plain
 
 
 def test_panic_tells_a_kernelcache_holds_no_symbols(tmp_path: Path):
