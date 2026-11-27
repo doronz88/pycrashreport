@@ -87,6 +87,30 @@ def _render_field(
     text.append(f"{value}\n", style=style)
 
 
+def _render_registers(text: Text, registers: Iterable[Register]) -> None:
+    """Append the registers in rows, the names of the ones which locate code and stack set apart."""
+    text.append("Registers:", style=STYLE_LABEL)
+    for i, register in enumerate(registers):
+        if i % REGISTERS_PER_ROW == 0:
+            text.append("\n")
+        value = f"0x{register.value:016x}"
+        # right-aligned in a fixed cell, so the rows line up into columns
+        cell = f"{register.name} = {value} "
+        text.append(" " * (REGISTER_CELL_WIDTH - len(cell)))
+        text.append(
+            register.name,
+            style=(
+                STYLE_REGISTER_CONTROL
+                if register.name in CONTROL_REGISTERS
+                else STYLE_REGISTER
+            ),
+        )
+        text.append(" = ")
+        text.append(value, style=STYLE_ZERO if register.value == 0 else None)
+        text.append(" ")
+    text.append("\n")
+
+
 def _render_location(
     text: Text,
     image: Optional[str],
@@ -925,13 +949,8 @@ class UserModeCrashReport(CrashReportBase):
 
         text.append("\n")
 
-        text.append("Registers:", style=STYLE_LABEL)
-        for i, register in enumerate(self.registers):
-            if i % REGISTERS_PER_ROW == 0:
-                text.append("\n")
-            self._render_register(text, register)
-
-        text.append("\n\n")
+        _render_registers(text, self.registers)
+        text.append("\n")
 
         text.append("Frames:\n", style=STYLE_LABEL)
         for frame in self.frames:
@@ -949,24 +968,6 @@ class UserModeCrashReport(CrashReportBase):
             for frame in thread.frames:
                 self._render_frame(text, frame)
         return text
-
-    @staticmethod
-    def _render_register(text: Text, register: Register) -> None:
-        value = f"0x{register.value:016x}"
-        # right-aligned in a fixed cell, so the rows line up into columns
-        cell = f"{register.name} = {value} "
-        text.append(" " * (REGISTER_CELL_WIDTH - len(cell)))
-        text.append(
-            register.name,
-            style=(
-                STYLE_REGISTER_CONTROL
-                if register.name in CONTROL_REGISTERS
-                else STYLE_REGISTER
-            ),
-        )
-        text.append(" = ")
-        text.append(value, style=STYLE_ZERO if register.value == 0 else None)
-        text.append(" ")
 
     @staticmethod
     def _render_frame(text: Text, frame: Frame) -> None:
@@ -1445,6 +1446,51 @@ class KernelModeCrashReport(StackshotReportBase):
             return match.group(1)
         return first_line
 
+    #: A line of the registers the kernel prints of the exception it panicked over
+    _REGISTER_LINE = re.compile(r"\s*(?:\w+:\s*0x[0-9a-fA-F]+\s*)+")
+
+    @cached_property
+    def registers(self) -> List[Register]:
+        """The registers at the exception the kernel panicked over, in the order the panic gives
+        them. Empty for a panic which is not over an exception, as one the kernel called for."""
+        result = []
+        for line in self._panic_lines()[1:]:
+            if not self._REGISTER_LINE.fullmatch(line):
+                break
+            for name, value in re.findall(r"(\w+):\s*0x([0-9a-fA-F]+)", line):
+                result.append(Register(name=name, value=int(value, 16)))
+        return result
+
+    def _frame_at(self, address: int, innermost: bool) -> Optional[StackshotFrame]:
+        """The frame of an address of the running kernel: of the kernel image the report tells
+        which got loaded closest below it."""
+        closest = None
+        for uuid, base, kind in (
+            image[:3] for image in self._report_field("binaryImages") or []
+        ):
+            if kind not in IMAGE_KINDS_KERNEL or base > address:
+                continue
+            if closest is None or base > closest[1]:
+                closest = uuid, base
+        if closest is None:
+            return None
+        uuid, base = closest
+        return self._kernel_frame(uuid, base, address - base, innermost)
+
+    @cached_property
+    def register_frames(self) -> List[Tuple[str, StackshotFrame]]:
+        """Where ``pc`` and ``lr`` of `registers` point, of the ones the kernel symbols name."""
+        values = {register.name: register.value for register in self.registers}
+        result = []
+        for name in ("pc", "lr"):
+            if name not in values:
+                continue
+            # `lr` is an address to return to
+            frame = self._frame_at(values[name], innermost=name == "pc")
+            if frame is not None and frame.symbol is not None:
+                result.append((name, frame))
+        return result
+
     @cached_property
     def exit_reason(self) -> Optional[ExitReason]:
         """Why the process ended whose exit made the kernel panic, when that is what happened."""
@@ -1612,6 +1658,18 @@ class KernelModeCrashReport(StackshotReportBase):
     def _render_details(self, text: Text) -> None:
         if self.panic_string:
             _render_field(text, "Panic", self.panic_string, STYLE_FAILURE)
+        if self.registers:
+            _render_registers(text, self.registers)
+            for name, frame in self.register_frames:
+                text.append(f"\t{name:<6} ", style=STYLE_REGISTER_CONTROL)
+                _render_location(
+                    text,
+                    frame.image,
+                    frame.address,
+                    frame.symbol,
+                    frame.symbol_offset,
+                    frame.image_offset,
+                )
         if self.exit_reason:
             _render_field(text, "Exit reason", self.exit_reason, STYLE_DETAIL)
         if self.debugger_message:
