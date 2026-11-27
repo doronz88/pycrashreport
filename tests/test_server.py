@@ -6,7 +6,10 @@ import pytest
 from apple_symbols import DeviceSupportSymbols, KernelSymbols
 from apple_symbols.testing import build_fileset, build_macho
 from symbolicator_server.client import SymbolicatorClient
-from symbolicator_server.exceptions import ServerUnreachableError
+from symbolicator_server.exceptions import (
+    IncompatibleServerError,
+    ServerUnreachableError,
+)
 from symbolicator_server.models import (
     FunctionSymbol,
     ImageInfo,
@@ -52,6 +55,12 @@ HIGH_BIT = 1 << 63
 
 class FakeServer:
     """A server holding one build, of which it names `bar` and `panic` but neither `foo` nor the kext."""
+
+    def __init__(self) -> None:
+        #: the routes asked for functions, in the order they were
+        self.asked: list = []
+        #: whether the server has the route which takes many addresses at once
+        self.finds_functions = True
 
     def find_dscs(self, device: str, build: str) -> list:
         if (device, build) != ("iPhone17,3", "23E246"):
@@ -114,6 +123,35 @@ class FakeServer:
     def image_symbols(
         self, uuid: str, dsc: Optional[str] = None, kernelcache: Optional[str] = None
     ) -> Optional[list]:
+        self.asked.append("image_symbols")
+        return self._functions(uuid)
+
+    def find_functions(
+        self,
+        images: dict,
+        dsc: Optional[str] = None,
+        kernelcache: Optional[str] = None,
+    ) -> dict:
+        if not self.finds_functions:
+            raise IncompatibleServerError(SERVER, "/functions", None, "1.0")
+        self.asked.append("find_functions")
+        return {
+            uuid: [
+                next(
+                    (
+                        function
+                        for function in self._functions(uuid) or []
+                        if function.start <= address < function.end
+                    ),
+                    None,
+                )
+                for address in addresses
+            ]
+            for uuid, addresses in images.items()
+            if self._functions(uuid) is not None
+        }
+
+    def _functions(self, uuid: str) -> Optional[list]:
         if uuid.lower() == LIBFOO_UUID:
             return [
                 FunctionSymbol(LIBFOO_VMADDR + 0x100, LIBFOO_VMADDR + 0x200, None),
@@ -130,11 +168,16 @@ class FakeServer:
         return None
 
 
+@pytest.fixture
+def fake_server() -> FakeServer:
+    return FakeServer()
+
+
 @pytest.fixture(autouse=True)
-def server(monkeypatch: pytest.MonkeyPatch) -> list:
+def server(monkeypatch: pytest.MonkeyPatch, fake_server: FakeServer) -> list:
     """Answer for the server at `SERVER`, and list the URLs which got connected to."""
     connected = []
-    fake = FakeServer()
+    fake = fake_server
 
     def connect(url: str) -> SymbolicatorClient:
         connected.append(url)
@@ -147,6 +190,7 @@ def server(monkeypatch: pytest.MonkeyPatch) -> list:
             "find_kernelcaches",
             "kernelcache_images",
             "image_symbols",
+            "find_functions",
         ):
             monkeypatch.setattr(client, name, getattr(fake, name))
         return client
@@ -349,6 +393,24 @@ def test_server_tells_a_report_whose_kernelcache_it_does_not_hold(
         f"{SERVER} holds no kernelcache of iPhone17,3 (23E246) with the kernel images of "
         f"the report, scan its IPSW to name kernel frames with it"
     ]
+
+
+def test_server_is_asked_for_the_names_of_a_report_at_once(fake_server: FakeServer):
+    report = panic()
+    assert named(report.panicked_thread_frames[:1]) == [
+        ("com.apple.kernel", "_remote_panic", 0x10)
+    ]
+    # the userland and the kernel frames of every thread, and no image on its own
+    assert fake_server.asked == ["find_functions", "find_functions"]
+
+
+def test_server_too_old_to_name_a_report_at_once_fails_reading_frames(
+    fake_server: FakeServer,
+):
+    fake_server.finds_functions = False
+    report = panic()
+    with pytest.raises(SymbolServerError, match="of /functions"):
+        _ = report.panicked_thread_frames
 
 
 def test_server_which_cannot_be_reached_fails_reading_frames():

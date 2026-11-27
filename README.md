@@ -140,6 +140,10 @@ build of the report. What the server could not help with is logged as a warning.
 not tell which kernelcache the device ran, so the server is asked for the one of its device and
 build which holds its kernel images.
 
+The names of all the frames of a report are asked for at once: one request for its userland frames
+and one for its kernel frames, whatever the number of images they are in. That takes a
+symbolicator-server 0.6.0 or later.
+
 `PYCRASHREPORT_SERVER` goes for every report parsed from Python as well, whatever parses it.
 `report.symbol_server` holds the URL: assign another, or `None` for none, before reading any frame.
 A server which cannot be reached raises `pycrashreport.symbols.SymbolServerError` once frames are

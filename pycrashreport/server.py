@@ -7,7 +7,8 @@ asks the server of its ``symbol_server``, which ``PYCRASHREPORT_SERVER`` sets fo
 """
 
 import logging
-from typing import Iterable, Optional
+from contextlib import ExitStack, contextmanager
+from typing import Generator, Iterable, Optional
 
 from apple_symbols.remote import RemoteDeviceSymbols, RemoteKernelSymbols
 from symbolicator_server.client import SymbolicatorClient
@@ -17,19 +18,20 @@ from symbolicator_server.exceptions import (
     ServerUnreachableError,
 )
 
-from pycrashreport.symbols import SymbolServerError
+from pycrashreport.symbols import (
+    KernelSymbolChain,
+    SymbolServerError,
+    UserlandSymbolChain,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def connect(server: str) -> SymbolicatorClient:
-    """
-    Get a client of the server at the given URL, e.g. ``http://localhost:3993``.
-
-    :raises SymbolServerError: If the server cannot be reached, or does not tell its routes.
-    """
+@contextmanager
+def _server_errors(server: str) -> Generator[None, None, None]:
+    """Raise what asking the server fails with as a ``SymbolServerError``."""
     try:
-        return SymbolicatorClient.connect(server)
+        yield
     except ServerUnreachableError as e:
         raise SymbolServerError(f"Reaching {e.server} failed: {e.reason}") from e
     except IncompatibleServerError as e:
@@ -39,6 +41,41 @@ def connect(server: str) -> SymbolicatorClient:
         ) from e
     except ServerError as e:
         raise SymbolServerError(f"{server} failed: {e.message}") from e
+
+
+def connect(server: str) -> SymbolicatorClient:
+    """
+    Get a client of the server at the given URL, e.g. ``http://localhost:3993``.
+
+    :raises SymbolServerError: If the server cannot be reached, or does not tell its routes.
+    """
+    with _server_errors(server):
+        return SymbolicatorClient.connect(server)
+
+
+@contextmanager
+def collecting(server: str, sources: Iterable[object]) -> Generator[None, None, None]:
+    """
+    Within it the symbols of the server at the given URL among the given sources name nothing and only note what
+    they are asked, and on leaving fetch it all in one request each. So frames are read twice:
+    once within, and once after, when every address is answered from what was fetched. The first
+    lookup in an image otherwise fetches every function of it, megabytes for a system framework.
+
+    :raises SymbolServerError: If the server fails the request, or is too old to take it.
+    """
+    with _server_errors(server), ExitStack() as stack:
+        for source in sources:
+            if isinstance(
+                source,
+                (
+                    RemoteDeviceSymbols,
+                    RemoteKernelSymbols,
+                    UserlandSymbolChain,
+                    KernelSymbolChain,
+                ),
+            ):
+                stack.enter_context(source.collecting())
+        yield
 
 
 def userland_symbols(
